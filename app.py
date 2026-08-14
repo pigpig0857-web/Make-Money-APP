@@ -1289,12 +1289,11 @@ if ticker is None:
 
     st.markdown(
         '<div style="text-align:center;padding:48px 20px 8px;">'
-        '<div style="font-size:42px;font-weight:900;letter-spacing:2px;'
-        'background:linear-gradient(90deg,#FFD700 0%,#FFA500 55%,#FF8C00 100%);'
-        '-webkit-background-clip:text;background-clip:text;'
-        '-webkit-text-fill-color:transparent;color:transparent;'
-        'filter:drop-shadow(0 3px 6px rgba(180,120,0,0.40));">'
-        '🪙 財神爺選股 📈</div>'
+        '<div style="display:flex;align-items:center;justify-content:center;gap:15px;margin-bottom:5px;">'
+        '<img src="https://img.icons8.com/color/96/gold-bars.png" width="45" height="45" style="object-fit:contain;">'
+        '<div style="font-size:42px;font-weight:900;letter-spacing:2px;color:#FFD700;'
+        'text-shadow:0 3px 6px rgba(180,120,0,0.40);">財神爺選股</div>'
+        '<img src="https://img.icons8.com/color/96/gold-bars.png" width="45" height="45" style="object-fit:contain;"></div>'
         '<div style="color:#b45309;font-size:0.98rem;font-weight:700;margin-top:14px;">'
         '「富貴雙收 ‧ 點石成金 ｜ AI 智慧選股與技術診斷」</div>'
         '<div style="color:#6b7280;font-size:1.02rem;margin-top:10px;">'

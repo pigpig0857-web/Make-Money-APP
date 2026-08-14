@@ -6,10 +6,10 @@ echo   StockVision AI - One-click Launcher
 echo ============================================
 echo.
 
-cd /d "C:\Users\88697\Documents\GitHub\homework\MakeMoney App"
+cd /d "C:\Users\88697\Documents\GitHub\My-Repo\MakeMoney App"
 
 set "PYTHON=C:\Users\88697\miniconda3\python.exe"
-set "APP=C:\Users\88697\Documents\GitHub\homework\MakeMoney App\app.py"
+set "APP=C:\Users\88697\Documents\GitHub\My-Repo\MakeMoney App\app.py"
 set "URL=http://localhost:8501"
 set "MAX_WAIT=60"
 
