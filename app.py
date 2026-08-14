@@ -54,6 +54,38 @@ st.markdown(
             width: 100% !important;
             font-size: 14px !important;
         }
+
+        /* 5. 手機端觸控目標最小 44px（符合 Apple / Android 觸控標準） */
+        .stButton > button,
+        .stDownloadButton > button,
+        .stTextInput input,
+        .stSelectbox [data-baseweb="select"] > div,
+        .stRadio > div[role="radiogroup"] > label {
+            min-height: 44px !important;
+        }
+        .stButton > button {
+            padding-top: 8px !important;
+            padding-bottom: 8px !important;
+        }
+
+        /* 6. 防止手勢誤選文字 / 誤觸高亮（原生 App 手感） */
+        .stButton > button,
+        .stTextInput input,
+        .stSelectbox [data-baseweb="select"] > div,
+        [data-testid="stHorizontalBlock"] > div {
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* 7. 多欄位手機端自動換行（原生 App 卡片堆疊感） */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            min-width: 45% !important;
+            flex: 1 1 auto !important;
+        }
     }
     </style>
     """,
@@ -67,6 +99,29 @@ HOT_STOCKS = [
     ("台達電", "2308.TW"),
     ("廣達", "2382.TW"),
 ]
+
+QUICK_TAGS = [
+    ("2330 台積電", "2330.TW"),
+    ("2317 鴻海", "2317.TW"),
+    ("2454 聯發科", "2454.TW"),
+    ("0050", "0050.TW"),
+    ("00878", "00878.TW"),
+]
+
+
+def render_quick_tags(source: str) -> None:
+    """熱門股票一鍵快選標籤列：電腦端並排 5 顆，手機端自動換行、按鈕合手指大小。
+
+    點擊後直接寫入搜尋並載入完整分析，無需手動打字。
+    """
+    cols = st.columns(len(QUICK_TAGS))
+    for col, (label, code) in zip(cols, QUICK_TAGS):
+        with col:
+            if st.button(label, key=f"quick_tag_{source}_{code}", use_container_width=True):
+                st.session_state["selected_stock"] = code
+                st.session_state["home_search"] = label.split(" ", 1)[0]
+                st.session_state["home_search_sync"] = label
+                st.rerun()
 
 STOCK_INFO = {
     "2344.TW": {
@@ -290,6 +345,7 @@ def _candidate_tickers(ticker: str) -> list[str]:
     return [f"{ticker}.TW", f"{ticker}.TWO"]
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def _verify_ticker_via_yfinance(ticker: str) -> str | None:
     """以 yfinance 驗證股票 / ETF 是否真實存在；成功回傳有效代號，失敗回傳 None。
 
@@ -344,7 +400,7 @@ def build_search_error_message(bad_input: str) -> str:
     )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def lookup_stock_name(ticker: str) -> str:
     """由 Yahoo 代號（如 2330.TW / 2377.TW）解析中文股票名稱。
 
@@ -372,6 +428,22 @@ def lookup_stock_name(ticker: str) -> str:
 # ====================== 工具函式 ======================
 def _seed(key: str):
     return np.random.default_rng(zlib.crc32(key.encode("utf-8")))
+
+
+def is_mobile_request() -> bool:
+    """以瀏覽器 User-Agent 偵測手機 / 平板，供手機端 UI 最佳化使用。
+
+    偵測不到（bare mode / 舊版）時一律回傳 False，確保電腦端行為不變。
+    """
+    try:
+        headers = st.context.headers
+        ua = headers.get("User-Agent", "") if hasattr(headers, "get") else ""
+        if not ua and hasattr(headers, "to_dict"):
+            ua = headers.to_dict().get("User-Agent", "")
+    except Exception:
+        return False
+    ua = (ua or "").lower()
+    return any(k in ua for k in ("mobile", "android", "iphone", "ipad"))
 
 
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -437,6 +509,7 @@ def render_market_badge(status: dict) -> None:
         )
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_live_price(ticker: str):
     """開盤期間抓取 1 分鐘等級最新成交資料（best-effort，失敗回傳 None）。"""
     try:
@@ -861,7 +934,7 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
     return fig
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_kline_chart(stock_id: str, period: str = "日 K") -> go.Figure:
     """快取 K 線圖 Figure（快取鍵 = stock_id + period）。
 
@@ -921,18 +994,24 @@ def render_kline_chart(
         unsafe_allow_html=True,
     )
 
+    mobile = is_mobile_request()
+    modebar_remove = [
+        "lasso2d",
+        "select2d",
+        "autoScale2d",
+        "toggleSpikelines",
+        "hoverClosestCartesian",
+        "hoverCompareCartesian",
+    ]
+    if mobile:
+        # 手機端只保留縮放 / 平移 / 重置，移除易誤觸的截圖與其餘工具
+        modebar_remove.append("toImage")
     config = {
-        "displayModeBar": True,
         "displaylogo": False,
         "responsive": True,
-        "modeBarButtonsToRemove": [
-            "lasso2d",
-            "select2d",
-            "autoScale2d",
-            "toggleSpikelines",
-            "hoverClosestCartesian",
-            "hoverCompareCartesian",
-        ],
+        "scrollZoom": True,
+        "displayModeBar": "hover" if mobile else True,
+        "modeBarButtonsToRemove": modebar_remove,
     }
     st.plotly_chart(fig, config=config, use_container_width=True, key=f"kline_{ticker}_{period}")
 
@@ -1253,6 +1332,9 @@ with st.sidebar:
             st.session_state["search_error"] = build_search_error_message(ticker_input)
             st.rerun()
 
+    st.caption("📌 熱門快選（一鍵點擊）")
+    render_quick_tags("sidebar")
+
     st.markdown("**🔥 熱門推薦 Quick Pick**")
     for name, code in HOT_STOCKS:
         if st.button(f"{name}　{code.replace('.TW', '')}", key=f"quick_{code}", use_container_width=True):
@@ -1304,6 +1386,8 @@ if ticker is None:
     )
 
     # 搜尋輸入框：Enter 或「開始 AI 診斷」按鈕皆可送出，直接載入完整分析
+    st.caption("📌 熱門快選（一鍵點擊）")
+    render_quick_tags("home")
     with st.form(key="home_search_form"):
         st.text_input(
             "🔍 股票代號 / 名稱",
@@ -1344,13 +1428,13 @@ fund = get_fundamental(ticker)
 chip = generate_chip_data(ticker)
 
 if status["is_open"]:
-    with st.spinner("開盤中：正在抓取即時報價與最新 K 線..."):
+    with st.spinner("財神爺正在為您診斷籌碼與 K 線（開盤即時報價）..."):
         df, source = _download_daily(ticker)
     live = fetch_live_price(ticker)
     if live is not None:
         source += "（1 分鐘級即時報價）"
 else:
-    with st.spinner("正在取得行情與 AI 診斷中..."):
+    with st.spinner("財神爺正在為您診斷籌碼與 K 線..."):
         df, source = fetch_stock_data(ticker)
     live = None
 
