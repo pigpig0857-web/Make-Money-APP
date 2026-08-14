@@ -1010,7 +1010,8 @@ def render_kline_chart(
         "displaylogo": False,
         "responsive": True,
         "scrollZoom": True,
-        "displayModeBar": "hover" if mobile else True,
+        "displayModeBar": False if mobile else True,
+        "showAxisDragHandles": True,
         "modeBarButtonsToRemove": modebar_remove,
     }
     st.plotly_chart(fig, config=config, use_container_width=True, key=f"kline_{ticker}_{period}")
