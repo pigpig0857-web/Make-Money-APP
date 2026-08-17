@@ -5,6 +5,7 @@
 """
 
 import re
+import json
 import zlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,7 +13,9 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 from plotly.subplots import make_subplots
 
 # ====================== 頁面基本設定 ======================
@@ -86,13 +89,48 @@ st.markdown(
             min-width: 45% !important;
             flex: 1 1 auto !important;
         }
+
+        /* 8. AI 多空診斷卡片樣式 */
+        .ai-diagnosis-card {
+            background: linear-gradient(135deg, #1E222D 0%, #2A2E39 100%);
+            border-radius: 14px;
+            padding: 20px 22px;
+            margin-bottom: 16px;
+            color: #F9FAFB;
+            font-family: 'Microsoft JhengHei', Arial, sans-serif;
+            line-height: 1.65;
+        }
+        .ai-diagnosis-card summary::-webkit-details-marker { display: none; }
+        .ai-diagnosis-card summary::marker { display: none; content: ''; }
+        .ai-diagnosis-card details[open] summary > span:first-child { transform: rotate(90deg); }
+
+        /* 9. 手機端 AI 診斷卡片自適應 */
+        @media (max-width: 768px) {
+            .ai-diagnosis-card {
+                padding: 14px 12px !important;
+                border-radius: 10px !important;
+                font-size: 0.9rem !important;
+            }
+            .ai-diagnosis-card > div:first-child span[style*="font-size:1.8rem"] {
+                font-size: 1.3rem !important;
+            }
+            .ai-diagnosis-card > div:first-child div span[style*="font-size:1.35rem"] {
+                font-size: 1.05rem !important;
+            }
+            .ai-diagnosis-card details > div > div[style*="grid-template-columns"] {
+                grid-template-columns: 1fr !important;
+            }
+            .ai-diagnosis-card > div[style*="display:flex"][style*="gap:14px"] {
+                flex-direction: column !important;
+            }
+        }
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-HOT_STOCKS = [
+_FALLBACK_HOT_STOCKS = [
     ("台積電", "2330.TW"),
     ("鴻海", "2317.TW"),
     ("聯發科", "2454.TW"),
@@ -100,22 +138,114 @@ HOT_STOCKS = [
     ("廣達", "2382.TW"),
 ]
 
-QUICK_TAGS = [
-    ("2330 台積電", "2330.TW"),
-    ("2317 鴻海", "2317.TW"),
-    ("2454 聯發科", "2454.TW"),
-    ("0050", "0050.TW"),
-    ("00878", "00878.TW"),
-]
+
+@st.cache_data(ttl=1800)
+def get_daily_trending_stocks():
+    """抓取 Yahoo 奇摩股市首頁「上市熱門排行」前 5 名（成交量排序）。
+
+    優先從頁面嵌入的 JSON 解析，失敗則退回 HTML 解析，
+    最終備援使用靜態清單，確保 UI 永遠有資料可顯示。
+    """
+    url = "https://tw.stock.yahoo.com/"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+    }
+
+    try:
+        res = requests.get(url, headers=headers, timeout=8)
+        res.raise_for_status()
+        html = res.text
+
+        # --- 方法 1：從嵌入 JSON 解析 TableStore ---
+        # 首頁 <script> 中包含 root.App.main = { ... };
+        json_match = re.search(
+            r"root\.App\.main\s*=\s*(\{.*?\})\s*;",
+            html,
+            re.DOTALL,
+        )
+        if json_match:
+            try:
+                raw_json = json_match.group(1)
+                raw_json = re.sub(r'\bundefined\b', 'null', raw_json)
+                data = json.loads(raw_json)
+                table_store = (
+                    data.get("context", {})
+                    .get("dispatcher", {})
+                    .get("stores", {})
+                    .get("TableStore", {})
+                )
+                # 預設取成交量排行；若不存在嘗試其他 key
+                stock_list = None
+                for key_suffix in ("volume", "change", "changePercent", "turnoverM"):
+                    store_key = f"main-6-HotStock__{key_suffix}"
+                    if store_key in table_store:
+                        stock_list = table_store[store_key].get("list", [])
+                        break
+                if stock_list:
+                    results = []
+                    for item in stock_list[:6]:
+                        name = item.get("symbolName") or item.get("name", "")
+                        symbol = item.get("symbol", "")
+                        if name and symbol:
+                            results.append((name, symbol))
+                    if results:
+                        return results
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        # --- 方法 2：從 HTML 結構解析 ---
+        soup = BeautifulSoup(html, "html.parser")
+        links = soup.find_all("a", href=re.compile(r"tw\.stock\.yahoo\.com/quote/"))
+        seen = set()
+        results = []
+        for link in links:
+            href = link.get("href", "")
+            symbol_match = re.search(r"quote/([^\"/?]+)", href)
+            if not symbol_match:
+                continue
+            symbol = symbol_match.group(1)
+            if symbol in seen:
+                continue
+            # 從 link 的子元素或相鄰元素找中文名
+            name_el = link.find(
+                "div",
+                class_=lambda c: c and "Fw(600)" in c if c else False,
+            )
+            if not name_el:
+                name_el = link.find("div", string=re.compile(r"[\u4e00-\u9fff]"))
+            name = name_el.get_text(strip=True) if name_el else ""
+            # 若找不到名稱，嘗試純文字
+            if not name:
+                name = link.get_text(strip=True)
+            if name and symbol:
+                results.append((name, symbol))
+                seen.add(symbol)
+            if len(results) >= 6:
+                break
+        if results:
+            return results
+
+    except requests.RequestException:
+        pass
+
+    # --- 備援：靜態清單 ---
+    return list(_FALLBACK_HOT_STOCKS)
 
 
 def render_quick_tags(source: str) -> None:
-    """熱門股票一鍵快選標籤列：電腦端並排 5 顆，手機端自動換行、按鈕合手指大小。
-
-    點擊後直接寫入搜尋並載入完整分析，無需手動打字。
-    """
-    cols = st.columns(len(QUICK_TAGS))
-    for col, (label, code) in zip(cols, QUICK_TAGS):
+    """熱門股票一鍵快選標籤列：即時抓取 Yahoo 熱門排行前 5 名。"""
+    trending = get_daily_trending_stocks()
+    tags = []
+    for name, code in trending:
+        short_code = code.replace(".TW", "")
+        tags.append((f"{short_code} {name}", code))
+    tags = tags[:5]
+    cols = st.columns(len(tags))
+    for col, (label, code) in zip(cols, tags):
         with col:
             if st.button(label, key=f"quick_tag_{source}_{code}", use_container_width=True):
                 st.session_state["selected_stock"] = code
@@ -766,6 +896,313 @@ def compute_kd(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 9) ->
     return k, d
 
 
+def compute_macd(closes: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    """計算 MACD（DIF、MACD 柱狀體、訊號線）。"""
+    ema_fast = closes.ewm(span=fast, adjust=False).mean()
+    ema_slow = closes.ewm(span=slow, adjust=False).mean()
+    dif = ema_fast - ema_slow
+    macd_bar = dif.ewm(span=signal, adjust=False).mean()
+    hist = dif - macd_bar
+    return dif, macd_bar, hist
+
+
+def compute_ultimate_diagnosis(df: pd.DataFrame) -> dict:
+    """雙維度矩陣：中長線趨勢 × 短線動能 → 四大綜合診斷結論。
+
+    維度一 — 中長線趨勢 (trend)：判斷 20MA、60MA 與當前股價排列。
+    維度二 — 短線動能 (momentum)：判斷 RSI(14) 位階與 MACD 柱狀體狀態。
+
+    回傳 dict 含：
+      trend / momentum / verdict / emoji / label / color / advice /
+      ma20 / ma60 / rsi / macd_hist / vol_ratio / vol_change_pct
+    """
+    closes = df["Close"].astype(float)
+    last = float(closes.iloc[-1])
+
+    # ---- 均線 ----
+    ma5 = float(df["MA5"].iloc[-1]) if not pd.isna(df["MA5"].iloc[-1]) else last
+    ma20 = float(df["MA20"].iloc[-1]) if not pd.isna(df["MA20"].iloc[-1]) else last
+    ma60 = float(df["MA60"].iloc[-1]) if not pd.isna(df["MA60"].iloc[-1]) else last
+
+    # ---- RSI ----
+    rsi_series = compute_rsi(closes, 14)
+    rsi_now = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+
+    # ---- MACD ----
+    dif, macd_bar, hist = compute_macd(closes)
+    dif_now = float(dif.iloc[-1]) if not pd.isna(dif.iloc[-1]) else 0.0
+    dif_prev = float(dif.iloc[-2]) if len(dif) >= 2 and not pd.isna(dif.iloc[-2]) else dif_now
+    bar_now = float(macd_bar.iloc[-1]) if not pd.isna(macd_bar.iloc[-1]) else 0.0
+    bar_prev = float(macd_bar.iloc[-2]) if len(macd_bar) >= 2 and not pd.isna(macd_bar.iloc[-2]) else bar_now
+    hist_now = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0.0
+    hist_prev = float(hist.iloc[-2]) if len(hist) >= 2 and not pd.isna(hist.iloc[-2]) else hist_now
+
+    golden_cross = dif_prev <= bar_prev and dif_now > bar_now
+    death_cross = dif_prev >= bar_prev and dif_now < bar_now
+
+    # ---- 成交量 ----
+    vol_now = float(df["Volume"].iloc[-1])
+    vol_prev = float(df["Volume"].iloc[-2]) if len(df) >= 2 else vol_now
+    vol_ma5 = float(df["Volume"].tail(5).mean())
+    vol_ratio = vol_now / vol_ma5 if vol_ma5 else 1.0
+    vol_change_pct = (vol_now / vol_prev - 1) * 100 if vol_prev else 0.0
+
+    # ================================================================
+    #  維度一：中長線趨勢
+    # ================================================================
+    above_ma20 = last > ma20
+    ma20_above_ma60 = ma20 > ma60
+    below_ma20 = last < ma20
+    ma20_below_ma60 = ma20 < ma60
+
+    if above_ma20 and ma20_above_ma60:
+        trend = "bull"
+        trend_label = "多頭趨勢"
+    elif below_ma20 and ma20_below_ma60:
+        trend = "bear"
+        trend_label = "空頭趨勢"
+    else:
+        trend = "neutral"
+        trend_label = "震盪格局"
+
+    # ================================================================
+    #  維度二：短線動能
+    # ================================================================
+    rsi_overbought = rsi_now >= 70
+    rsi_bullish = 50 < rsi_now < 70
+    rsi_neutral = 40 <= rsi_now <= 50
+    rsi_bearish = rsi_now < 40
+    hist_positive = hist_now > 0
+    hist_increasing = hist_now > hist_prev
+
+    if (rsi_bullish or rsi_overbought) and hist_positive and (golden_cross or hist_increasing):
+        momentum = "bull"
+        momentum_label = "偏多動能"
+    elif rsi_bearish and (death_cross or (not hist_positive and not hist_increasing)):
+        momentum = "bear"
+        momentum_label = "偏空動能"
+    else:
+        momentum = "neutral"
+        momentum_label = "觀望中性"
+
+    # ================================================================
+    #  四大綜合診斷矩陣
+    # ================================================================
+    if trend == "bull" and momentum == "bull":
+        verdict = "bull_bull"
+        emoji = "🟢"
+        label = "多頭主升段"
+        advice = "中短線方向一致，建議順勢持股續抱或逢拉回分批佈局。"
+        color = "#10B981"
+    elif trend == "bull" and momentum != "bull":
+        verdict = "bull_other"
+        emoji = "🟡"
+        label = "中多短洗（高檔震盪）"
+        advice = "中長線趨勢保護短線，當前屬高檔洗盤，建議靜待拉回支撐位再行觀望佈局。"
+        color = "#F59E0B"
+    elif trend == "bear" and momentum == "bull":
+        verdict = "bear_bull"
+        emoji = "🟠"
+        label = "弱勢反彈"
+        advice = "中長線趨勢仍偏空，短線屬技術性反彈，留意上方均線反壓，不宜盲目追高。"
+        color = "#F97316"
+    else:
+        verdict = "bear_bear"
+        emoji = "🔴"
+        label = "空頭防守"
+        advice = "趨勢與動能雙弱，建議空手觀望為主，並嚴格執行停損防線。"
+        color = "#EF4444"
+
+    # ---- 均線排列文字 ----
+    if above_ma20 and ma20_above_ma60:
+        ma_text = f"多頭排列：股價 ({last:.2f}) 站穩 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之上"
+    elif below_ma20 and ma20_below_ma60:
+        ma_text = f"空頭排列：股價 ({last:.2f}) 跌破 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之下"
+    elif above_ma20 and not ma20_above_ma60:
+        ma_text = f"股價 ({last:.2f}) 站上 20MA ({ma20:.2f})，但 20MA 仍低於 60MA ({ma60:.2f})，趨勢未完全轉多"
+    elif not above_ma20 and ma20_above_ma60:
+        ma_text = f"股價 ({last:.2f}) 跌破 20MA ({ma20:.2f})，但 20MA 仍在 60MA ({ma60:.2f}) 之上，留意回測支撐"
+    else:
+        ma_text = f"均線糾結：股價 ({last:.2f}) 在 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之間震盪"
+
+    # ---- RSI 文字 ----
+    if rsi_overbought:
+        rsi_text = f"RSI(14) = {rsi_now:.1f}，處於 70 以上過熱區，短線慎防拉回修正"
+    elif rsi_bullish:
+        rsi_text = f"RSI(14) = {rsi_now:.1f}，處於 50~70 偏多區，短線多方動能尚存"
+    elif rsi_neutral:
+        rsi_text = f"RSI(14) = {rsi_now:.1f}，處於 40~50 觀望中性區"
+    elif rsi_bearish:
+        rsi_text = f"RSI(14) = {rsi_now:.1f}，處於 40 以下偏空區，短線動能偏弱"
+    else:
+        rsi_text = f"RSI(14) = {rsi_now:.1f}"
+
+    # ---- MACD 文字 ----
+    if golden_cross:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，剛出現黃金交叉，短線動能轉多"
+    elif death_cross:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，剛出現死亡交叉，短線動能轉空"
+    elif hist_now > 0 and hist_increasing:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，柱狀體翻正且放大，多頭動能增強"
+    elif hist_now > 0:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，柱狀體為正但縮小，多頭動能趨緩"
+    elif hist_now < 0 and hist_increasing:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，柱狀體為負但收斂，空頭動能減弱"
+    elif hist_now < 0:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，柱狀體為負且擴大，空頭動能增強"
+    else:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}"
+
+    # ---- 成交量文字 ----
+    if vol_ratio >= 1.5:
+        vol_text = f"成交量較昨日變動 {vol_change_pct:+.1f}%，量能為 5 日均量 {vol_ratio:.2f} 倍，屬於放量表態"
+    elif vol_ratio >= 1.1:
+        vol_text = f"成交量較昨日變動 {vol_change_pct:+.1f}%，量能為 5 日均量 {vol_ratio:.2f} 倍，量能溫和放大"
+    elif vol_ratio <= 0.6:
+        vol_text = f"成交量較昨日變動 {vol_change_pct:+.1f}%，量能為 5 日均量 {vol_ratio:.2f} 倍，屬於明顯縮量"
+    elif vol_ratio <= 0.9:
+        vol_text = f"成交量較昨日變動 {vol_change_pct:+.1f}%，量能為 5 日均量 {vol_ratio:.2f} 倍，屬於縮量震盪"
+    else:
+        vol_text = f"成交量較昨日變動 {vol_change_pct:+.1f}%，量能為 5 日均量 {vol_ratio:.2f} 倍，量能平穩"
+
+    return {
+        "trend": trend,
+        "trend_label": trend_label,
+        "momentum": momentum,
+        "momentum_label": momentum_label,
+        "verdict": verdict,
+        "emoji": emoji,
+        "label": label,
+        "color": color,
+        "advice": advice,
+        "last": last,
+        "ma20": ma20,
+        "ma60": ma60,
+        "rsi": rsi_now,
+        "macd_hist": hist_now,
+        "macd_cross": "golden" if golden_cross else ("death" if death_cross else "none"),
+        "vol_ratio": vol_ratio,
+        "vol_change_pct": vol_change_pct,
+        "ma_text": ma_text,
+        "rsi_text": rsi_text,
+        "macd_text": macd_text,
+        "vol_text": vol_text,
+    }
+
+
+def render_ultimate_diagnosis_card(diag: dict) -> None:
+    """渲染 AI 終極綜合診斷面板：雙維度矩陣 + 四大結論 + 數據剖析展開區。"""
+    color = diag["color"]
+
+    glow_map = {
+        "bull_bull": "rgba(16,185,129,0.40)",
+        "bull_other": "rgba(245,158,11,0.35)",
+        "bear_bull": "rgba(249,115,22,0.35)",
+        "bear_bear": "rgba(239,68,68,0.40)",
+    }
+    glow = glow_map.get(diag["verdict"], glow_map["bear_bear"])
+
+    trend_color_map = {"bull": "#10B981", "neutral": "#F59E0B", "bear": "#EF4444"}
+    mom_color_map = {"bull": "#10B981", "neutral": "#F59E0B", "bear": "#EF4444"}
+
+    trend_dot = trend_color_map.get(diag["trend"], "#F59E0B")
+    mom_dot = mom_color_map.get(diag["momentum"], "#F59E0B")
+
+    st.markdown(
+        f"""
+<div class="ai-diagnosis-card" style="border-left:5px solid {color};
+    box-shadow:0 0 22px {glow}, 0 6px 18px rgba(0,0,0,0.30);">
+
+  <!-- ── 標題列 ── -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+    <span style="font-size:1.8rem;">{diag['emoji']}</span>
+    <div>
+      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 終極綜合診斷：{diag['label']}</div>
+      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">雙維度矩陣判定 ｜ 中長線趨勢 × 短線動能</div>
+    </div>
+  </div>
+
+  <!-- ── 雙維度指標列 ── -->
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">
+    <div style="flex:1;min-width:200px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid {trend_dot};">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">中長線趨勢</div>
+      <div style="font-size:1.1rem;font-weight:800;color:{trend_dot};">{diag['trend_label']}</div>
+      <div style="font-size:0.82rem;color:#D1D5DB;margin-top:4px;">20MA {diag['ma20']:.2f}　60MA {diag['ma60']:.2f}　股價 {diag['last']:.2f}</div>
+    </div>
+    <div style="flex:1;min-width:200px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid {mom_dot};">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">短線動能</div>
+      <div style="font-size:1.1rem;font-weight:800;color:{mom_dot};">{diag['momentum_label']}</div>
+      <div style="font-size:0.82rem;color:#D1D5DB;margin-top:4px;">RSI {diag['rsi']:.1f}　MACD 柱狀 {diag['macd_hist']:+.2f}</div>
+    </div>
+  </div>
+
+  <!-- ── 操作建議 ── -->
+  <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:12px 16px;margin-bottom:10px;">
+    <strong style="color:#FCD34D;">操作建議：</strong>
+    <span style="color:#D1D5DB;font-size:0.93rem;">{diag['advice']}</span>
+  </div>
+
+  <div style="color:#6B7280;font-size:0.75rem;margin-top:10px;text-align:right;">
+    雙維度矩陣綜合研判　|　趨勢 {diag['trend_label']}　動能 {diag['momentum_label']}　|　僅供參考
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ── 數據剖析展開區：用 st.expander 原生摺疊（<details> 在 Streamlit markdown 中不支援） ──
+    with st.expander("📊 診斷原因與數據剖析", expanded=False):
+        expander_css = (
+            "background:rgba(255,255,255,0.06);border-radius:8px;"
+            "padding:10px 12px;border-left:3px solid {border_c};"
+            "margin-bottom:8px;"
+        )
+        detail_items = [
+            ("📈 均線排列 (MA)", "#60A5FA", diag["ma_text"]),
+            ("💪 RSI 動能指標", "#A78BFA", diag["rsi_text"]),
+            ("📊 MACD 柱狀體", "#34D399", diag["macd_text"]),
+            ("📦 成交量變化", "#FBBF24", diag["vol_text"]),
+        ]
+        grid_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+        for title, border_c, body in detail_items:
+            grid_html += (
+                f'<div style="{expander_css.format(border_c=border_c)}">'
+                f'<div style="font-size:0.78rem;color:{border_c};font-weight:700;margin-bottom:4px;">{title}</div>'
+                f'<div style="font-size:0.85rem;color:#E5E7EB;line-height:1.55;">{body}</div>'
+                f'</div>'
+            )
+        grid_html += "</div>"
+        st.markdown(grid_html, unsafe_allow_html=True)
+
+
+def render_key_support_resistance(df: pd.DataFrame, close_now: float) -> None:
+    """計算並展示 4 個關鍵支撐 / 壓力 / 風控指標。"""
+    d20 = df.tail(20)
+    d5 = df.tail(5)
+
+    resistance = float(d20["High"].max()) if len(d20) else close_now
+    support = float(d20["Low"].min()) if len(d20) else close_now
+    recent_5d_low = float(d5["Low"].min()) if len(d5) else support
+    stop_loss = max(support * 0.97, recent_5d_low)
+
+    upside = ((resistance - close_now) / close_now * 100) if close_now else 0
+    downside = ((close_now - stop_loss) / close_now * 100) if close_now else 0
+    rr_ratio = upside / downside if downside > 0 else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("近期壓力位 (Resistance)", f"{resistance:,.1f} 元", f"近 20 日最高價")
+    c2.metric("近期支撐位 (Support)", f"{support:,.1f} 元", f"近 20 日最低價")
+    c3.metric("建議參考停損價", f"{stop_loss:,.1f} 元", f"支撐位 -3% / 近 5 日低點")
+    c4.metric("潛在風險報酬比", f"{rr_ratio:.2f}", f"上行 {upside:+.1f}% / 下行 -{downside:.1f}%", delta_color="off")
+
+    if rr_ratio >= 2.0:
+        st.success(f"風報比 {rr_ratio:.2f} 達標（≥ 2.0），從技術面看進場風險相對可控。")
+    elif rr_ratio >= 1.0:
+        st.info(f"風報比 {rr_ratio:.2f} 尚可（≥ 1.0），需搭配其他訊號綜合判斷。")
+    else:
+        st.warning(f"風報比 {rr_ratio:.2f} 偏低（< 1.0），短線追高風險較大，建議等待更好進場點。")
+
+
 def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
     """純函式：將指定週期 K 線資料（df）轉為 Plotly K 線 + 成交量 Figure。
 
@@ -1206,15 +1643,205 @@ def generate_chip_data(ticker: str) -> dict:
     }
 
 
+def _is_etf(ticker: str) -> bool:
+    """判斷是否為 ETF：代碼以 00 開頭（如 0050、00878、0056、006208、00919 等）。"""
+    code = ticker.split(".")[0]
+    return code.startswith("00")
+
+
+ETF_INDUSTRY = "ETF / 指數股票型基金"
+FALLBACK_INDUSTRY = "綜合產業 / 未分類"
+
+# ── 層級 C：常見熱門台股產業備援字典（key 為純數字代碼） ──
+_FALLBACK_INDUSTRY_DICT: dict[str, str] = {
+    "2330": "半導體業",
+    "2317": "其他電子業",
+    "2454": "半導體業",
+    "2308": "電機機械",
+    "2382": "電腦及週邊設備業",
+    "2324": "電腦及週邊設備業",
+    "2303": "半導體業",
+    "2345": "半導體業",
+    "2399": "半導體業",
+    "2327": "半導體業",
+    "2379": "半導體業",
+    "2409": "光電業",
+    "3481": "光電業",
+    "6770": "半導體業",
+    "2357": "電腦及週邊設備業",
+    "2301": "電腦及週邊設備業",
+    "2304": "電機機械",
+    "2344": "半導體業",
+    "2376": "半導體業",
+    "2395": "電腦及週邊設備業",
+    "2377": "半導體業",
+    "3034": "半導體業",
+    "2303": "半導體業",
+    "3231": "電腦及週邊設備業",
+    "2371": "電腦及週邊設備業",
+    "2356": "電腦及週邊設備業",
+    "2347": "電腦及週邊設備業",
+    "3037": "半導體業",
+    "2324": "電腦及週邊設備業",
+    "2340": "光電業",
+    "2388": "半導體業",
+    "2603": "航運業",
+    "2609": "航運業",
+    "2615": "航運業",
+    "2618": "航空運輸",
+    "2881": "金融保險業",
+    "2882": "金融保險業",
+    "2884": "金融保險業",
+    "2886": "金融保險業",
+    "2891": "金融保險業",
+    "2892": "金融保險業",
+    "3711": "半導體業",
+    "2412": "電信業",
+    "4904": "電信業",
+    "4938": "電腦及週邊設備業",
+    "2352": "電腦及週邊設備業",
+    "2399": "半導體業",
+    "6547": "半導體業",
+    "3661": "半導體業",
+    "2049": "半導體業",
+    "3443": "半導體業",
+    "8046": "半導體業",
+    "5347": "半導體業",
+    "3293": "電子零組件業",
+    "2327": "半導體業",
+    "1590": "半導體業",
+    "3653": "半導體業",
+    "6669": "半導體業",
+    "3034": "半導體業",
+    "2301": "電腦及週邊設備業",
+    "2357": "電腦及週邊設備業",
+    "2369": "電子零組件業",
+    "2376": "半導體業",
+    "2345": "半導體業",
+    "2301": "電腦及週邊設備業",
+    "2382": "電腦及週邊設備業",
+    "2356": "電腦及週邊設備業",
+    "2395": "電腦及週邊設備業",
+    "2347": "電腦及週邊設備業",
+    "3231": "電腦及週邊設備業",
+    "2352": "電腦及週邊設備業",
+    "2371": "電腦及週邊設備業",
+    "4938": "電腦及週邊設備業",
+    "2377": "半導體業",
+    "3037": "半導體業",
+    "3711": "半導體業",
+    "2379": "半導體業",
+    "2388": "半導體業",
+    "3661": "半導體業",
+    "6669": "半導體業",
+    "2303": "半導體業",
+    "2340": "光電業",
+    "2409": "光電業",
+    "3481": "光電業",
+    "2327": "半導體業",
+    "8046": "半導體業",
+    "5347": "半導體業",
+    "3443": "半導體業",
+    "2049": "半導體業",
+    "1590": "半導體業",
+    "3653": "半導體業",
+    "6547": "半導體業",
+}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_industry_from_yahoo(ticker: str) -> str | None:
+    """從 Yahoo 奇摩股市個股頁面爬取產業類別（每日快取）。"""
+    code = ticker.split(".")[0]
+    yahoo_ticker = f"{code}.TW"
+    url = f"https://tw.stock.yahoo.com/quote/{yahoo_ticker}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+    }
+    try:
+        res = requests.get(url, headers=headers, timeout=8)
+        res.raise_for_status()
+        html = res.text
+
+        # 方法 1（最可靠）：直接 regex 搜尋 "sectorName":"xxx" — 不依賴完整 JSON 解析
+        sector_match = re.search(r'"sectorName"\s*:\s*"([^"]+)"', html)
+        if sector_match:
+            return sector_match.group(1)
+
+        # 方法 2：嘗試從 ySector 標記（event_params 中）取得
+        ysector_match = re.search(r'"ySector"\s*:\s*"([^"]+)"', html)
+        if ysector_match:
+            return ysector_match.group(1)
+
+        # 方法 3：從 HTML 結構搜尋「產業類別」標籤旁的文字
+        soup = BeautifulSoup(html, "html.parser")
+        for label_el in soup.find_all(string=re.compile(r"產業類別")):
+            parent = label_el.find_parent()
+            if parent is None:
+                continue
+            container = parent.find_parent()
+            if container:
+                for sib in container.find_all(["span", "div"]):
+                    text = sib.get_text(strip=True)
+                    if (
+                        text
+                        and len(text) > 1
+                        and re.search(r"[\u4e00-\u9fff]{2,}", text)
+                        and "產業" not in text
+                        and "更多" not in text
+                    ):
+                        return text
+
+    except requests.RequestException:
+        pass
+
+    return None
+
+
 def get_fundamental(ticker: str) -> dict:
     info = STOCK_INFO.get(ticker, {})
+    code = ticker.split(".")[0]
+
+    if _is_etf(ticker):
+        industry = ETF_INDUSTRY
+    elif "industry" in info:
+        # 層級 0：STOCK_INFO 硬編碼（最優先、最快）
+        industry = info["industry"]
+    else:
+        # ── 三層級動態獲取 ──
+        # 層級 A：嘗試 yfinance
+        industry = None
+        try:
+            import yfinance as yf
+
+            yf_info = yf.Ticker(ticker).info or {}
+            industry = yf_info.get("sector") or yf_info.get("industry")
+            if industry and isinstance(industry, str) and len(industry) > 1:
+                industry = industry
+            else:
+                industry = None
+        except Exception:
+            industry = None
+
+        # 層級 B：Yahoo 奇摩股市網頁爬蟲
+        if not industry:
+            industry = _fetch_industry_from_yahoo(ticker)
+
+        # 層級 C：常見熱門股備援字典
+        if not industry:
+            industry = _FALLBACK_INDUSTRY_DICT.get(code, FALLBACK_INDUSTRY)
+
     return {
         "cycle": info.get("sector_cycle", "擴張成長"),
         "shortage": info.get("shortage", "市場供需與漲價題材待觀察。"),
         "inventory": info.get("inventory_status", "正常"),
         "capex": info.get("capex_warning", False),
         "beta": float(info.get("beta", 1.0)),
-        "industry": info.get("industry", "電子產業"),
+        "industry": industry,
     }
 
 
@@ -1230,15 +1857,6 @@ def compute_ai_score(pattern_level: str, chip: dict, fund: dict) -> int:
     return int(np.clip(score, 0, 100))
 
 
-def overall_label(score: int):
-    if score >= 75:
-        return "多頭中繼 / 積極分批佈局", "success"
-    if score >= 55:
-        return "多方偏多 / 逢回低吸", "success"
-    if score >= 40:
-        return "區間震盪 / 保守觀望", "warning"
-    return "空頭弱勢 / 建議防守", "error"
-
 
 def streak_text(n: int, who: str) -> str:
     if n > 0:
@@ -1246,16 +1864,6 @@ def streak_text(n: int, who: str) -> str:
     if n < 0:
         return f"{who} 連賣 {-n} 日"
     return f"{who} 買賣持平"
-
-
-def render_badge(text: str, level: str, size: str = "1.05rem"):
-    bg = {"success": "#dcfce7", "warning": "#fef3c7", "error": "#fee2e2"}[level]
-    fg = {"success": "#15803d", "warning": "#b45309", "error": "#b91c1c"}[level]
-    st.markdown(
-        f'<div style="background:{bg};color:{fg};padding:10px 16px;border-radius:10px;'
-        f'font-weight:800;font-size:{size};text-align:center;">{text}</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def render_pill(text: str, level: str):
@@ -1275,33 +1883,6 @@ def cycle_level(cycle: str) -> str:
         return "warning"
     return "error"
 
-
-def build_advice(score: int, chip: dict, fund: dict, levels: dict):
-    advice = []
-    if score >= 55:
-        advice.append(
-            "技術面站上短中期均線、趨勢偏多：建議「不追高、分批低吸」，於短線低吸區進場，跌破波段防禦區應先行減碼。"
-        )
-    elif score >= 40:
-        advice.append(
-            "盤面多空拉鋸、型態尚未明朗：建議「保守觀望」，等待突破或回測支撐後再行操作，嚴設停損。"
-        )
-    else:
-        advice.append(
-            "技術面轉弱且籌碼鬆動：建議「嚴格防守」，跌破關鍵停損價位應紀律停損，不逆勢攤平。"
-        )
-
-    if chip["margin_chg"] > 8:
-        advice.append("融資近期快速增加，短線人氣過熱，需留意高檔反轉與多殺多風險。")
-    if chip["large_delta"] > 0:
-        advice.append("集保大戶持股比重上升，籌碼趨向集中，有利多方。")
-    if fund["inventory"] == "偏高":
-        advice.append("庫存水位偏高，需注意去化速度與毛利率下滑壓力。")
-    if fund["capex"]:
-        advice.append("資本支出與折舊負擔較重，留意獲利侵蝕風險。")
-    if fund["beta"] >= 1.2:
-        advice.append("個股與大盤連動度偏高（Beta 較大），系統性風險來臨時跌幅恐被放大。")
-    return advice
 
 
 # ====================== Sidebar 搜尋與設定 ======================
@@ -1337,7 +1918,7 @@ with st.sidebar:
     render_quick_tags("sidebar")
 
     st.markdown("**🔥 熱門推薦 Quick Pick**")
-    for name, code in HOT_STOCKS:
+    for name, code in get_daily_trending_stocks():
         if st.button(f"{name}　{code.replace('.TW', '')}", key=f"quick_{code}", use_container_width=True):
             st.session_state["selected_stock"] = code
 
@@ -1406,8 +1987,9 @@ if ticker is None:
             st.rerun()
 
     st.markdown("### 🔥 熱門推薦標的 Quick Pick")
-    hot_columns = st.columns(len(HOT_STOCKS))
-    for col, (name, code) in zip(hot_columns, HOT_STOCKS):
+    hot_trending = get_daily_trending_stocks()
+    hot_columns = st.columns(len(hot_trending))
+    for col, (name, code) in zip(hot_columns, hot_trending):
         with col:
             if st.button(
                 f"**{name}**\n\n{code.replace('.TW', '')}",
@@ -1450,6 +2032,10 @@ with header_right:
 st.caption(f"產業：{fund['industry']}　|　資料來源：{source}")
 render_market_badge(status)
 
+# ====================== AI 終極綜合診斷面板（雙維度矩陣） ======================
+diagnosis = compute_ultimate_diagnosis(df)
+render_ultimate_diagnosis_card(diagnosis)
+
 close_now = float(df["Close"].iloc[-1])
 close_prev = float(df["Close"].iloc[-2])
 chg = close_now - close_prev
@@ -1470,16 +2056,12 @@ pattern_weekly, level_weekly = timeframe_pattern(weekly["Close"])
 pattern_monthly, level_monthly = timeframe_pattern(monthly["Close"])
 
 score = compute_ai_score(level_daily, chip, fund)
-label, badge_level = overall_label(score)
 levels = compute_levels(close_now)
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("目前股價 (NT$)", f"{close_now:,.2f}", delta=f"{chg_pct:+.2f}%")
 c2.metric("當日漲跌幅", f"{chg_pct:+.2f}%", delta=f"{chg:+.2f} 元")
 c3.metric("成交量", f"{vol_now / 1000:,.1f} 仟張", delta=f"較昨日 {vol_pct:+.1f}%")
-with c4:
-    st.markdown("**AI 綜合診斷**")
-    render_badge(label, badge_level)
 st.caption(f"AI 綜合分數：{score} / 100（技術面 {pattern_daily}）")
 
 st.divider()
@@ -1544,6 +2126,10 @@ fig_kline = get_kline_chart(ticker, kline_period)
 render_kline_chart(fig_kline, ticker, view_lock=view_lock, uirevision=uirevision, period=kline_period)
 
 render_timeframe_cards(df, weekly, monthly)
+
+# ====================== 關鍵支撐 / 壓力 / 風控指標 ======================
+st.subheader("關鍵價位與風控防線")
+render_key_support_resistance(df, close_now)
 
 levels["resistance"] = round(float(df["High"].tail(60).max()), 1)
 render_price_dashboard(levels)
@@ -1696,19 +2282,6 @@ with r3:
         st.success("Beta 低於 1，相對抗跌，系統性風險影響較小。")
 
 st.divider()
-
-# ====================== AI 綜合決策與操作建議 ======================
-st.subheader("AI 綜合決策與操作建議")
-
-st.markdown("**AI 綜合分數**")
-st.progress(score / 100)
-render_badge(f"{score} / 100　{label}", badge_level, size="1.15rem")
-
-advice = build_advice(score, chip, fund, levels)
-with st.info("白話操作建議", icon="💡"):
-    st.markdown(advice[0])
-for note in advice[1:]:
-    st.warning(note)
 
 st.caption(
     "本 App 僅供教學與研究用途，所有數據（尤其 Mock Data）與診斷結果均不構成投資建議；"
