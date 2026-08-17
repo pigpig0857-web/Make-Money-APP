@@ -26,6 +26,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# 演算法升級後，首次載入時清除舊版排行榜快取（僅執行一次）
+_SCOREBOARD_VER_KEY = "_scoreboard_cache_ver"
+_CURRENT_VER = "v3_3dim"
+if st.session_state.get(_SCOREBOARD_VER_KEY) != _CURRENT_VER:
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    st.session_state[_SCOREBOARD_VER_KEY] = _CURRENT_VER
+
 # ====================== 手機版響應式 CSS（電腦端維持原樣） ======================
 st.markdown(
     """
@@ -797,6 +807,36 @@ TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 AUTORUN_INTERVAL_SECONDS = 15
 
 
+def force_scroll_to_top():
+    """利用 MutationObserver + 多重延遲，打斷 Streamlit 原生 scroll-retention，強制置頂。"""
+    scroll_js = """
+    <script>
+        (function forceScroll() {
+            var targetSidebar = window.parent.document.querySelector('section[data-testid="stSidebar"]');
+            var targetMain = window.parent.document.querySelector('section.main');
+
+            if (targetSidebar) {
+                targetSidebar.scrollTop = 0;
+                var innerSidebar = targetSidebar.querySelector('div[data-testid="stVerticalBlock"]');
+                if (innerSidebar) innerSidebar.scrollTop = 0;
+            }
+            if (targetMain) {
+                targetMain.scrollTop = 0;
+            }
+
+            [50, 100, 200, 500].forEach(function(delay) {
+                setTimeout(function() {
+                    if (targetSidebar) targetSidebar.scrollTop = 0;
+                    if (targetMain) targetMain.scrollTop = 0;
+                    window.parent.scrollTo(0, 0);
+                }, delay);
+            });
+        })();
+    </script>
+    """
+    st.components.v1.html(scroll_js, height=0, width=0)
+
+
 def get_market_status() -> dict:
     """判斷台股盤態：週一至週五 09:00-13:30（Asia/Taipei）為開盤中。"""
     now = datetime.now(TAIWAN_TZ)
@@ -1307,67 +1347,63 @@ def compute_ultimate_diagnosis(df: pd.DataFrame) -> dict:
     }
 
 
-def render_ultimate_diagnosis_card(diag: dict) -> None:
-    """渲染 AI 終極綜合診斷面板：雙維度矩陣 + 四大結論 + 數據剖析展開區。"""
-    color = diag["color"]
+def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
+    """渲染 AI 三維度綜合診斷卡片：基本面 + 技術面 + 籌碼關注度。"""
+    score = diag["score"]
+    icon = diag["icon"]
+    status = diag["status"]
 
-    glow_map = {
-        "bull_bull": "rgba(16,185,129,0.40)",
-        "bull_other": "rgba(245,158,11,0.35)",
-        "bear_bull": "rgba(249,115,22,0.35)",
-        "bear_bear": "rgba(239,68,68,0.40)",
-    }
-    glow = glow_map.get(diag["verdict"], glow_map["bear_bear"])
-
-    trend_color_map = {"bull": "#10B981", "neutral": "#F59E0B", "bear": "#EF4444"}
-    mom_color_map = {"bull": "#10B981", "neutral": "#F59E0B", "bear": "#EF4444"}
-
-    trend_dot = trend_color_map.get(diag["trend"], "#F59E0B")
-    mom_dot = mom_color_map.get(diag["momentum"], "#F59E0B")
+    if score >= 80:
+        color = "#10B981"
+        glow = "rgba(16,185,129,0.40)"
+    elif score >= 50:
+        color = "#F59E0B"
+        glow = "rgba(245,158,11,0.35)"
+    else:
+        color = "#EF4444"
+        glow = "rgba(239,68,68,0.40)"
 
     st.markdown(
         f"""
 <div class="ai-diagnosis-card" style="border-left:5px solid {color};
     box-shadow:0 0 22px {glow}, 0 6px 18px rgba(0,0,0,0.30);">
 
-  <!-- ── 標題列 ── -->
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-    <span style="font-size:1.8rem;">{diag['emoji']}</span>
+    <span style="font-size:1.8rem;">{icon}</span>
     <div>
-      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 終極綜合診斷：{diag['label']}</div>
-      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">雙維度矩陣判定 ｜ 中長線趨勢 × 短線動能</div>
+      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 三維度綜合診斷：{status}</div>
+      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">綜合評分 {score} / 100　｜　基本面(30) + 技術面(50) + 籌碼關注度(20)</div>
     </div>
   </div>
 
-  <!-- ── 雙維度指標列 ── -->
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">
-    <div style="flex:1;min-width:200px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid {trend_dot};">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">中長線趨勢</div>
-      <div style="font-size:1.1rem;font-weight:800;color:{trend_dot};">{diag['trend_label']}</div>
-      <div style="font-size:0.82rem;color:#D1D5DB;margin-top:4px;">20MA {diag['ma20']:.2f}　60MA {diag['ma60']:.2f}　股價 {diag['last']:.2f}</div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #3B82F6;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📊 基本面體質</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("fundamental_text", "基本面數據解析中...")}</div>
     </div>
-    <div style="flex:1;min-width:200px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid {mom_dot};">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">短線動能</div>
-      <div style="font-size:1.1rem;font-weight:800;color:{mom_dot};">{diag['momentum_label']}</div>
-      <div style="font-size:0.82rem;color:#D1D5DB;margin-top:4px;">RSI {diag['rsi']:.1f}　MACD 柱狀 {diag['macd_hist']:+.2f}</div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #60A5FA;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📈 技術面趨勢</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("ma_text", "均線數據解析中...")}</div>
     </div>
-  </div>
-
-  <!-- ── 操作建議 ── -->
-  <div style="background:rgba(255,255,255,0.06);border-radius:10px;padding:12px 16px;margin-bottom:10px;">
-    <strong style="color:#FCD34D;">操作建議：</strong>
-    <span style="color:#D1D5DB;font-size:0.93rem;">{diag['advice']}</span>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #A78BFA;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">💪 動能與指標</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("rsi_text", "RSI 指標解析中...")}｜{diag.get("macd_text", "MACD 動能解析中...")}</div>
+    </div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #FBBF24;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📦 量能與籌碼</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("vol_text", "成交量解析中...")}</div>
+    </div>
   </div>
 
   <div style="color:#6B7280;font-size:0.75rem;margin-top:10px;text-align:right;">
-    雙維度矩陣綜合研判　|　趨勢 {diag['trend_label']}　動能 {diag['momentum_label']}　|　僅供參考
+    三維度加權評分：基本面(30) + 技術面(50) + 籌碼關注度(20)　|　僅供參考
   </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    # ── 數據剖析展開區：用 st.expander 原生摺疊（<details> 在 Streamlit markdown 中不支援） ──
+    # ── 數據剖析展開區 ──
     with st.expander("📊 診斷原因與數據剖析", expanded=False):
         expander_css = (
             "background:rgba(255,255,255,0.06);border-radius:8px;"
@@ -1375,10 +1411,11 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
             "margin-bottom:8px;"
         )
         detail_items = [
-            ("📈 均線排列 (MA)", "#60A5FA", diag["ma_text"]),
-            ("💪 RSI 動能指標", "#A78BFA", diag["rsi_text"]),
-            ("📊 MACD 柱狀體", "#34D399", diag["macd_text"]),
-            ("📦 成交量變化", "#FBBF24", diag["vol_text"]),
+            ("📊 基本面體質", "#3B82F6", diag.get("fundamental_text", "基本面數據解析中...")),
+            ("📈 均線排列 (MA)", "#60A5FA", diag.get("ma_text", "均線數據解析中...")),
+            ("💪 RSI 動能指標", "#A78BFA", diag.get("rsi_text", "RSI 指標解析中...")),
+            ("📊 MACD 柱狀體", "#34D399", diag.get("macd_text", "MACD 動能解析中...")),
+            ("📦 成交量與籌碼", "#FBBF24", diag.get("vol_text", "成交量解析中...")),
         ]
         grid_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
         for title, border_c, body in detail_items:
@@ -2083,9 +2120,17 @@ def get_fundamental(ticker: str) -> dict:
     elif "industry" in info:
         industry = info["industry"]
     else:
-        # 統一從 get_tw_stock_metadata 取得產業（含快取）
         meta = get_tw_stock_metadata(ticker)
         industry = meta["industry"] or _FALLBACK_INDUSTRY_DICT.get(code, FALLBACK_INDUSTRY)
+
+    # 從 yfinance info 取得基本面數據
+    yf_info = {}
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        yf_info = t.info or {}
+    except Exception:
+        pass
 
     return {
         "cycle": info.get("sector_cycle", "擴張成長"),
@@ -2094,19 +2139,114 @@ def get_fundamental(ticker: str) -> dict:
         "capex": info.get("capex_warning", False),
         "beta": float(info.get("beta", 1.0)),
         "industry": industry,
+        "trailing_eps": yf_info.get("trailingEps"),
+        "forward_eps": yf_info.get("forwardEps"),
+        "pe_ratio": yf_info.get("trailingPE"),
+        "forward_pe": yf_info.get("forwardPE"),
+        "roe": yf_info.get("returnOnEquity"),
+        "dividend_yield": yf_info.get("dividendYield"),
+        "market_cap": yf_info.get("marketCap"),
     }
 
 
-def compute_ai_score(pattern_level: str, chip: dict, fund: dict) -> int:
-    score = 50
-    score += {"success": 25, "warning": 0, "error": -25}.get(pattern_level, 0)
-    score += 10 if chip["large_delta"] > 0 else 0
-    score += 10 if chip["foreign"] > 0 else (-5 if chip["foreign"] < 0 else 0)
-    score += 5 if chip["main_diff"] > 0 else -5
-    score -= 10 if chip["margin_chg"] > 8 else 0
-    score -= 10 if fund["inventory"] == "偏高" else 0
-    score -= 10 if fund["capex"] else 0
-    return int(np.clip(score, 0, 100))
+def calculate_precise_ai_score(df: pd.DataFrame, chip: dict, fund: dict) -> tuple[int, str, str]:
+    """三維度全方位綜合評分（總分 100 分）：基本面(30) + 技術面(50) + 籌碼關注度(20)。
+    回傳 (score, icon, status)。
+    """
+    closes = df["Close"].astype(float)
+    last = float(closes.iloc[-1])
+    vol_now = float(df["Volume"].iloc[-1])
+    vol_ma5 = float(df["Volume"].tail(5).mean())
+    vol_ma20 = float(df["Volume"].tail(20).mean()) if len(df) >= 20 else vol_ma5
+
+    ma20 = float(df["MA20"].iloc[-1]) if not pd.isna(df["MA20"].iloc[-1]) else last
+    ma60 = float(df["MA60"].iloc[-1]) if not pd.isna(df["MA60"].iloc[-1]) else last
+    rsi_series = compute_rsi(closes, 14)
+    rsi_now = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+    _, _, hist = compute_macd(closes)
+    hist_now = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0.0
+
+    # ══════════════════════════════════════════════════════════
+    #  維度一：基本面 (Fundamental) — 權重 30 分
+    # ══════════════════════════════════════════════════════════
+    fund_score = 0
+
+    # EPS & 獲利能力 (10分)
+    eps = fund.get("trailing_eps")
+    if eps is not None and eps > 0:
+        fund_score += 10
+
+    # 本益比 P/E Ratio (10分)
+    pe = fund.get("pe_ratio")
+    if pe is not None and 10 <= pe <= 25:
+        fund_score += 10
+
+    # ROE / 殖利率 (10分)
+    roe = fund.get("roe")
+    div_yield = fund.get("dividend_yield")
+    roe_ok = roe is not None and roe > 0.10
+    div_ok = div_yield is not None and div_yield > 0.04
+    if roe_ok or div_ok:
+        fund_score += 10
+
+    # ══════════════════════════════════════════════════════════
+    #  維度二：技術面 (Technical) — 權重 50 分
+    # ══════════════════════════════════════════════════════════
+    tech_score = 0
+
+    # MA 趨勢 (20分)
+    if last > ma20 and ma20 > ma60:
+        tech_score += 20
+    elif last > ma20 and ma20 <= ma60:
+        tech_score += 10
+    elif last < ma20 and last < ma60:
+        tech_score -= 10
+
+    # 動能指標 (20分)
+    if hist_now > 0:
+        tech_score += 10
+    if 50 < rsi_now < 70:
+        tech_score += 10
+    elif rsi_now > 70:
+        tech_score += 5
+
+    # 成交量與支撐壓力 (10分)
+    support = float(df["Close"].tail(20).min())
+    vol_above_ma5 = vol_now > vol_ma5
+    above_support = last > support
+    if vol_above_ma5 and above_support:
+        tech_score += 10
+    elif above_support:
+        tech_score += 5
+
+    # ══════════════════════════════════════════════════════════
+    #  維度三：籌碼與關注度 (Flow & Interest) — 權重 20 分
+    # ══════════════════════════════════════════════════════════
+    flow_score = 0
+
+    # 量能爆發度 (10分)：當日成交量 > 20日均量 1.5 倍
+    if vol_ma20 > 0 and vol_now > vol_ma20 * 1.5:
+        flow_score += 10
+    elif vol_ma20 > 0 and vol_now > vol_ma20 * 1.2:
+        flow_score += 5
+
+    # 市值大戶保護力 (10分)：大型權值股/核心 ETF
+    market_cap = fund.get("market_cap")
+    if market_cap is not None and market_cap >= 200_000_000_000:
+        flow_score += 10
+
+    # ══════════════════════════════════════════════════════════
+    #  總分 = 基本面 + 技術面 + 籌碼關注度
+    # ══════════════════════════════════════════════════════════
+    total = fund_score + tech_score + flow_score
+    total = int(np.clip(total, 0, 100))
+
+    if total >= 80:
+        return total, "🟢", "多頭主升 (基本面+技術面極佳)"
+    elif total >= 50:
+        return total, "🟡", "震盪整理 (指標分歧/觀望)"
+    else:
+        return total, "🔴", "空頭防守 (趨勢偏弱)"
 
 
 # ====================== 權威統一診斷（全站唯一來源） ======================
@@ -2114,23 +2254,96 @@ def get_global_precise_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund
     """全站唯一的權威 AI 診斷函式，同時輸出分數、燈號、狀態標籤。
     左邊排行榜與右邊詳細診斷卡片，一律呼叫此函式，確保 100% 同步。
     """
-    diag = compute_ultimate_diagnosis(df)
-    _, level = timeframe_pattern(df["Close"])
-    score = compute_ai_score(level, chip, fund)
+    score, icon, status = calculate_precise_ai_score(df, chip, fund)
     code = ticker.split(".")[0]
     name = lookup_stock_name(ticker)
     if name == code:
         name = fund.get("industry", code)
-    result = dict(diag)
-    result.update({
+
+    closes = df["Close"].astype(float)
+    last = float(closes.iloc[-1])
+    ma20 = float(df["MA20"].iloc[-1]) if not pd.isna(df["MA20"].iloc[-1]) else last
+    ma60 = float(df["MA60"].iloc[-1]) if not pd.isna(df["MA60"].iloc[-1]) else last
+    rsi_series = compute_rsi(closes, 14)
+    rsi_now = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+    _, _, hist = compute_macd(closes)
+    hist_now = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0.0
+    vol_now = float(df["Volume"].iloc[-1])
+    vol_ma5 = float(df["Volume"].tail(5).mean())
+    vol_ma20 = float(df["Volume"].tail(20).mean()) if len(df) >= 20 else vol_ma5
+    vol_ratio = vol_now / vol_ma5 if vol_ma5 else 1.0
+    vol_prev = float(df["Volume"].iloc[-2]) if len(df) >= 2 else vol_now
+    vol_change_pct = (vol_now / vol_prev - 1) * 100 if vol_prev else 0.0
+
+    # ── 基本面診斷文字 ──
+    eps = fund.get("trailing_eps")
+    pe = fund.get("pe_ratio")
+    roe = fund.get("roe")
+    div_yield = fund.get("dividend_yield")
+    eps_desc = f"EPS = {eps:.2f}" if eps is not None else "EPS 暫無資料"
+    pe_desc = f"P/E = {pe:.1f}倍（合理）" if pe is not None and 10 <= pe <= 25 else \
+              f"P/E = {pe:.1f}倍（偏高）" if pe is not None and pe > 25 else \
+              f"P/E = {pe:.1f}倍" if pe is not None else "P/E 暫無資料"
+    roe_desc = f"ROE = {roe * 100:.1f}%" if roe is not None else "ROE 暫無資料"
+    div_desc = f"殖利率 = {div_yield * 100:.2f}%" if div_yield is not None else ""
+    fundamental_text = f"{eps_desc}｜{pe_desc}｜{roe_desc}" + (f"｜{div_desc}" if div_desc else "")
+
+    # ── 技術面診斷文字 ──
+    if last > ma20 and ma20 > ma60:
+        ma_text = f"多頭排列：股價 ({last:.2f}) 站穩 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之上"
+    elif last > ma20 and ma20 <= ma60:
+        ma_text = f"反彈格局：股價 ({last:.2f}) 站上 20MA ({ma20:.2f})，但 20MA 仍低於 60MA ({ma60:.2f})"
+    elif last < ma20 and last < ma60:
+        ma_text = f"空頭排列：股價 ({last:.2f}) 跌破 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之下"
+    else:
+        ma_text = f"均線糾結：股價 ({last:.2f}) 在 20MA ({ma20:.2f}) 與 60MA ({ma60:.2f}) 之間震盪"
+
+    rsi_text = f"RSI(14) = {rsi_now:.1f}" + (
+        "，處於 70 以上過熱區" if rsi_now >= 70 else
+        "，處於 50~70 偏多區" if rsi_now > 50 else
+        "，處於 40~50 觀望中性區" if rsi_now >= 40 else
+        "，處於 40 以下偏空區"
+    )
+
+    if hist_now > 0:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，多方動能"
+    else:
+        macd_text = f"MACD 柱狀體 = {hist_now:+.2f}，空方動能"
+
+    # ── 量能與籌碼文字 ──
+    vol_ratio_20 = vol_now / vol_ma20 if vol_ma20 else 1.0
+    if vol_ratio_20 >= 1.5:
+        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能爆發（大戶進場關照）"
+    elif vol_ratio_20 >= 1.2:
+        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能溫和放大"
+    elif vol_ratio_20 <= 0.6:
+        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，明顯縮量"
+    else:
+        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能平穩"
+
+    market_cap = fund.get("market_cap")
+    if market_cap is not None and market_cap >= 200_000_000_000:
+        cap_text = f"市值 {market_cap / 1e12:.1f} 兆，屬大型權值股（大戶保護力強）"
+    elif market_cap is not None:
+        cap_text = f"市值 {market_cap / 1e9:.0f} 億"
+    else:
+        cap_text = ""
+    if cap_text:
+        vol_text += f"｜{cap_text}"
+
+    return {
         "ticker": ticker,
         "code": code,
         "name": name,
         "score": score,
-        "icon": diag["emoji"],
-        "status": diag["label"],
-    })
-    return result
+        "icon": icon,
+        "status": status,
+        "fundamental_text": fundamental_text,
+        "ma_text": ma_text,
+        "rsi_text": rsi_text,
+        "macd_text": macd_text,
+        "vol_text": vol_text,
+    }
 
 
 # ====================== AI 高分飆股排行榜（100 檔精選池） ======================
@@ -2199,7 +2412,8 @@ def get_top_ranked_stocks() -> list[dict]:
 def render_ai_scoreboard() -> None:
     """在側邊欄渲染 AI 高分飆股排行榜（前 15 名）。"""
     st.markdown("**🏆 AI 高分選股排行榜**")
-    scoreboard = get_top_ranked_stocks()
+    with st.spinner("正在為您計算 100 檔精選股 AI 評分，首次載入約需 5~10 秒..."):
+        scoreboard = get_top_ranked_stocks()
     if not scoreboard:
         st.caption("暫無排行榜資料")
         return
@@ -2207,6 +2421,8 @@ def render_ai_scoreboard() -> None:
         label = f"【{item['score']}分 {item['icon']}】{item['name']} ({item['code']})"
         if st.button(label, key=f"rank_{item['ticker']}", use_container_width=True):
             st.session_state["selected_stock"] = item["ticker"]
+            st.session_state["sidebar_key"] += 1
+            force_scroll_to_top()
             st.rerun()
 
 
@@ -2240,46 +2456,58 @@ def cycle_level(cycle: str) -> str:
 # ====================== Sidebar 搜尋與設定 ======================
 if "selected_stock" not in st.session_state:
     st.session_state["selected_stock"] = None
+if "sidebar_key" not in st.session_state:
+    st.session_state["sidebar_key"] = 0
 
 with st.sidebar:
-    st.markdown(
-        '<div style="font-size:1.4rem;font-weight:900;letter-spacing:1px;'
-        'background:linear-gradient(90deg,#FFD700 0%,#FFA500 100%);'
-        '-webkit-background-clip:text;background-clip:text;'
-        '-webkit-text-fill-color:transparent;color:transparent;'
-        'filter:drop-shadow(0 2px 3px rgba(180,120,0,0.30));">'
-        '💰 財神爺選股</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption("台股智慧投資分析助理（教學用途）")
+    with st.container(key=f"sidebar_{st.session_state['sidebar_key']}"):
+        st.markdown('<div id="sidebar-top"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:1.4rem;font-weight:900;letter-spacing:1px;'
+            'background:linear-gradient(90deg,#FFD700 0%,#FFA500 100%);'
+            '-webkit-background-clip:text;background-clip:text;'
+            '-webkit-text-fill-color:transparent;color:transparent;'
+            'filter:drop-shadow(0 2px 3px rgba(180,120,0,0.30));">'
+            '💰 財神爺選股</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("台股智慧投資分析助理（教學用途）")
 
-    ticker_input = st.text_input(
-        "股票代號 / 名稱",
-        placeholder="例如：2330.TW 或 台積電",
-        help="支援台股 4 碼代號（如 2330）或中文名（如 台積電）。",
-    )
-    if st.button("🔍 開始 AI 診斷", type="primary", use_container_width=True, key="btn_search_sidebar"):
-        valid, ticker_code, _ = validate_stock_input(ticker_input)
-        if valid and ticker_code:
-            st.session_state["selected_stock"] = ticker_code
-        else:
-            st.session_state["search_error"] = build_search_error_message(ticker_input)
+        ticker_input = st.text_input(
+            "股票代號 / 名稱",
+            placeholder="例如：2330.TW 或 台積電",
+            help="支援台股 4 碼代號（如 2330）或中文名（如 台積電）。",
+        )
+        if st.button("🔍 開始 AI 診斷", type="primary", use_container_width=True, key="btn_search_sidebar"):
+            valid, ticker_code, _ = validate_stock_input(ticker_input)
+            if valid and ticker_code:
+                st.session_state["selected_stock"] = ticker_code
+                st.session_state["sidebar_key"] += 1
+                force_scroll_to_top()
+            else:
+                st.session_state["search_error"] = build_search_error_message(ticker_input)
+                st.rerun()
+
+        st.markdown("**🔥 熱門推薦 Quick Pick**")
+        for name, code in get_daily_trending_stocks():
+            if st.button(f"{name}　{code.replace('.TW', '')}", key=f"quick_{code}", use_container_width=True):
+                st.session_state["selected_stock"] = code
+                st.session_state["sidebar_key"] += 1
+                force_scroll_to_top()
+
+        st.divider()
+        render_ai_scoreboard()
+        st.divider()
+        if st.button("🏠 回到首頁 / 重新搜尋", key="btn_home_sidebar", use_container_width=True):
+            st.session_state["selected_stock"] = None
+            st.session_state["sidebar_key"] += 1
+            force_scroll_to_top()
             st.rerun()
 
-    st.markdown("**🔥 熱門推薦 Quick Pick**")
-    for name, code in get_daily_trending_stocks():
-        if st.button(f"{name}　{code.replace('.TW', '')}", key=f"quick_{code}", use_container_width=True):
-            st.session_state["selected_stock"] = code
+        st.caption("資料來源：優先使用 Yahoo Finance，離線或延遲時自動以 Mock Data 展示。")
+        st.caption("交易時段（週一至五 09:00–13:30）將自動每 15 秒刷新頁面，呈現即時價格浮動。")
 
-    st.divider()
-    render_ai_scoreboard()
-    st.divider()
-    if st.button("🏠 回到首頁 / 重新搜尋", key="btn_home_sidebar", use_container_width=True):
-        st.session_state["selected_stock"] = None
-        st.rerun()
-
-    st.caption("資料來源：優先使用 Yahoo Finance，離線或延遲時自動以 Mock Data 展示。")
-    st.caption("交易時段（週一至五 09:00–13:30）將自動每 15 秒刷新頁面，呈現即時價格浮動。")
+st.markdown('<div id="main-top"></div>', unsafe_allow_html=True)
 
 status = get_market_status()
 setup_autorun(status["is_open"])
@@ -2330,6 +2558,8 @@ if ticker is None:
         valid, ticker_code, _ = validate_stock_input(st.session_state["home_search"])
         if valid and ticker_code:
             st.session_state["selected_stock"] = ticker_code
+            st.session_state["sidebar_key"] += 1
+            force_scroll_to_top()
             st.rerun()
         else:
             st.session_state["search_error"] = build_search_error_message(st.session_state["home_search"])
@@ -2347,6 +2577,8 @@ if ticker is None:
             ):
                 st.session_state["selected_stock"] = code
                 st.session_state["home_search_sync"] = name
+                st.session_state["sidebar_key"] += 1
+                force_scroll_to_top()
                 st.rerun()
 
     st.divider()
@@ -2356,19 +2588,18 @@ if ticker is None:
 info = STOCK_INFO.get(ticker, {})
 stock_code = ticker.rsplit(".", 1)[0]
 stock_name = lookup_stock_name(ticker)
-fund = get_fundamental(ticker)
-chip = generate_chip_data(ticker)
 
-if status["is_open"]:
-    with st.spinner("財神爺正在為您診斷籌碼與 K 線（開盤即時報價）..."):
+with st.spinner("💰 財神爺正在讀取基本面、籌碼面與 K 線資料，請稍候..."):
+    fund = get_fundamental(ticker)
+    chip = generate_chip_data(ticker)
+    if status["is_open"]:
         df, source = _download_daily(ticker)
-    live = fetch_live_price(ticker)
-    if live is not None:
-        source += "（1 分鐘級即時報價）"
-else:
-    with st.spinner("財神爺正在為您診斷籌碼與 K 線..."):
+        live = fetch_live_price(ticker)
+        if live is not None:
+            source += "（1 分鐘級即時報價）"
+    else:
         df, source = fetch_stock_data(ticker)
-    live = None
+        live = None
 
 # ====================== 頂部概覽與 AI 評級 ======================
 header_left, header_right = st.columns([6, 1])
@@ -2377,13 +2608,15 @@ with header_left:
 with header_right:
     if st.button("🏠 回到首頁", key="btn_back_home", use_container_width=True):
         st.session_state["selected_stock"] = None
+        st.session_state["sidebar_key"] += 1
+        force_scroll_to_top()
         st.rerun()
 st.caption(f"產業：{fund['industry']}　|　資料來源：{source}")
 render_market_badge(status)
 
 # ====================== AI 終極綜合診斷面板（統一權威來源） ======================
 precise_diag = get_global_precise_diagnosis(ticker, df, chip, fund)
-render_ultimate_diagnosis_card(precise_diag)
+render_ultimate_diagnosis_card(precise_diag, df)
 
 close_now = float(df["Close"].iloc[-1])
 close_prev = float(df["Close"].iloc[-2])
