@@ -6,7 +6,6 @@
 
 import streamlit as st
 
-from frontend.components.scroll_script import render_scroll_script
 from frontend.components.kline_chart import get_kline_chart, render_kline_chart
 from frontend.components.data_tables import (
     get_market_status,
@@ -476,8 +475,6 @@ def render_main_view():
 
     container_key = f"main_content_holder_{ticker or 'home'}"
     with st.container(key=container_key):
-        render_scroll_script()
-
         st.markdown('<div id="main-top"></div>', unsafe_allow_html=True)
 
         if ticker is None:

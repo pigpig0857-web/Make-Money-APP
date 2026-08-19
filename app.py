@@ -29,3 +29,6 @@ if "scroll_to_top" not in st.session_state:
 # ====================== 渲染 ======================
 render_sidebar()
 render_main_view()
+
+from frontend.components.scroll_script import render_scroll_script
+render_scroll_script()
