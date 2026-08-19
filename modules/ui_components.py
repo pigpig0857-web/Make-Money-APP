@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from modules.data_fetcher import _download_daily, resample_kline
+from modules.data_fetcher import _PERIOD_HISTORY, _download_daily, resample_kline
 
 
 def is_mobile_request() -> bool:

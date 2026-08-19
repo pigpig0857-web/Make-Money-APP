@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-資料抓取與台股名稱解析模組
-包含所有 yfinance 資料抓取、TWSE/TPEx 股票主檔、名稱解析、Mock Data 等邏輯。
+股票主檔與名稱解析模組（Backend — Stock Master）
+包含 TWSE/TPEx 股票主檔、全台股中文/代號對照、別名映射、
+五層降級解析、熱門推薦抓取、基本面數據查詢等。
 """
 
 import re
 import json
-import zlib
 
-import numpy as np
-import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
+
+# ────────────────────── 熱門推薦 ──────────────────────
 
 _FALLBACK_HOT_STOCKS = [
     ("台積電", "2330.TW"),
@@ -45,8 +45,6 @@ def get_daily_trending_stocks():
         res.raise_for_status()
         html = res.text
 
-        # --- 方法 1：從嵌入 JSON 解析 TableStore ---
-        # 首頁 <script> 中包含 root.App.main = { ... };
         json_match = re.search(
             r"root\.App\.main\s*=\s*(\{.*?\})\s*;",
             html,
@@ -63,7 +61,6 @@ def get_daily_trending_stocks():
                     .get("stores", {})
                     .get("TableStore", {})
                 )
-                # 預設取成交量排行；若不存在嘗試其他 key
                 stock_list = None
                 for key_suffix in ("volume", "change", "changePercent", "turnoverM"):
                     store_key = f"main-6-HotStock__{key_suffix}"
@@ -82,7 +79,6 @@ def get_daily_trending_stocks():
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
-        # --- 方法 2：從 HTML 結構解析 ---
         soup = BeautifulSoup(html, "html.parser")
         links = soup.find_all("a", href=re.compile(r"tw\.stock\.yahoo\.com/quote/"))
         seen = set()
@@ -95,7 +91,6 @@ def get_daily_trending_stocks():
             symbol = symbol_match.group(1)
             if symbol in seen:
                 continue
-            # 從 link 的子元素或相鄰元素找中文名
             name_el = link.find(
                 "div",
                 class_=lambda c: c and "Fw(600)" in c if c else False,
@@ -103,7 +98,6 @@ def get_daily_trending_stocks():
             if not name_el:
                 name_el = link.find("div", string=re.compile(r"[\u4e00-\u9fff]"))
             name = name_el.get_text(strip=True) if name_el else ""
-            # 若找不到名稱，嘗試純文字
             if not name:
                 name = link.get_text(strip=True)
             if name and symbol:
@@ -117,9 +111,10 @@ def get_daily_trending_stocks():
     except requests.RequestException:
         pass
 
-    # --- 備援：靜態清單 ---
     return list(_FALLBACK_HOT_STOCKS)
 
+
+# ────────────────────── 股票資訊主檔 ──────────────────────
 
 STOCK_INFO = {
     "2344.TW": {
@@ -449,7 +444,6 @@ _ALIAS_MAP: dict[str, str] = {
     "臻鼎": "4958.TW",
     "智易": "3596.TW",
     "慧洋": "2637.TW",
-    "南亞科": "2408.TW",
 }
 
 # ── 代碼 → 中文名稱的快取（反查用） ──
@@ -460,7 +454,6 @@ for _c, _n in TW_STOCK_NAMES.items():
 # ── 建立模糊（部分比對）反查表：中文名稱片段 → 代碼列表 ──
 _NAME_FRAGMENTS: dict[str, list[str]] = {}
 for _code, _name in TW_STOCK_NAMES.items():
-    # 拆解名稱中的每個 2 字元片段
     clean_name = _name.replace("-KY", "").replace("-KY", "")
     for _frag_len in (2, 3, 4):
         for _i in range(len(clean_name) - _frag_len + 1):
@@ -469,23 +462,22 @@ for _code, _name in TW_STOCK_NAMES.items():
 
 
 # ── 全型 → 半型對照表 ──
-_FULLWIDTH_TO_HALFWIDTH: dict[str, str] = {}
+_FULLSCREEN_TO_HALFWIDTH: dict[str, str] = {}
 for _i in range(ord("０"), ord("９") + 1):
-    _FULLWIDTH_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("０") + ord("0"))
+    _FULLSCREEN_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("０") + ord("0"))
 for _i in range(ord("Ａ"), ord("Ｚ") + 1):
-    _FULLWIDTH_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("Ａ") + ord("A"))
+    _FULLSCREEN_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("Ａ") + ord("A"))
 for _i in range(ord("ａ"), ord("ｚ") + 1):
-    _FULLWIDTH_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("ａ") + ord("a"))
+    _FULLSCREEN_TO_HALFWIDTH[chr(_i)] = chr(_i - ord("ａ") + ord("a"))
 
+
+# ────────────────────── 解析工具函式 ──────────────────────
 
 def _normalize_input(raw: str) -> str:
     """將使用者輸入統一轉為半型、去空白、去市場別尾碼。"""
     text = raw.strip()
-    # 全型轉半型
-    text = "".join(_FULLWIDTH_TO_HALFWIDTH.get(ch, ch) for ch in text)
-    # 移除所有空白（含全型空格）
+    text = "".join(_FULLSCREEN_TO_HALFWIDTH.get(ch, ch) for ch in text)
     text = text.replace(" ", "").replace("\u3000", "")
-    # 移除常見尾碼（保留純代碼或名稱）
     text = re.sub(r"\.(TW|TWO|TWO?)$", "", text, flags=re.IGNORECASE)
     return text.strip()
 
@@ -503,7 +495,6 @@ def _query_yahoo_search(query: str) -> str | None:
         for quote in data.get("quotes", []):
             symbol = quote.get("symbol", "")
             exchange = quote.get("exchange", "")
-            # 只取台灣交易所的股票 / ETF
             if exchange in ("TAI", "TWO") and symbol.endswith((".TW", ".TWO")):
                 return symbol
     except Exception:
@@ -513,11 +504,7 @@ def _query_yahoo_search(query: str) -> str | None:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_tw_stock_master() -> dict[str, str]:
-    """從 TWSE / TPEx 官方取得完整台股名稱→代碼對照表（24 小時 cache）。
-
-    回傳 {中文名稱: "代碼.TW"} 或 {中文名稱: "代碼.TWO"}。
-    作為硬編碼字典的動態補充，確保任何合法台股名稱都能被解析。
-    """
+    """從 TWSE / TPEx 官方取得完整台股名稱→代碼對照表（24 小時 cache）。"""
     name_to_ticker: dict[str, str] = {}
     _ua = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -525,17 +512,12 @@ def _fetch_tw_stock_master() -> dict[str, str]:
         "Chrome/126.0.0.0 Safari/537.36"
     )
 
-    # ── 1. TWSE 上市股票 ──
-    # 注意：TWSE ISIN 頁面使用 MS950 (Big5) 編碼，不能強制 utf-8。
-    # HTML 結構：每個 <tr> 的第一個 <td> 包含 "代碼　名稱"（全型空白分隔），
-    # 後續 <td> 為 ISIN Code、上市日期、市場別、產業別等。
     try:
         res = requests.get(
             "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
             headers={"User-Agent": _ua},
             timeout=15,
         )
-        # 從 Content-Type 自動偵測編碼（通常為 MS950/Big5），不強制 UTF-8
         if "charset=" in (res.headers.get("Content-Type") or ""):
             res.encoding = res.headers["Content-Type"].rsplit("charset=", 1)[-1].strip()
         else:
@@ -549,14 +531,12 @@ def _fetch_tw_stock_master() -> dict[str, str]:
                 cells = row.find_all("td")
                 if len(cells) < 1:
                     continue
-                # cell[0] = "代碼　名稱"（以全型空白 \u3000 分隔）
                 first_cell = cells[0].get_text(strip=True)
                 parts = first_cell.split("\u3000")
                 if len(parts) >= 2:
                     code = parts[0].strip()
                     name = parts[1].strip()
                 elif len(cells) >= 3:
-                    # 備用：某些列可能分開存放
                     code = cells[1].get_text(strip=True)
                     name = cells[2].get_text(strip=True)
                 else:
@@ -566,9 +546,6 @@ def _fetch_tw_stock_master() -> dict[str, str]:
     except Exception:
         pass
 
-    # ── 2. TPEx 上櫃股票 ──
-    # TPEx 新版網站為 JavaScript SPA，無法以 requests 直接解析 HTML。
-    # 嘗試常見的 JSON API endpoint；若皆失敗則跳過（不影響上市股票查詢）。
     _tpex_urls = [
         "https://www.tpex.org.tw/www/zh-tw/afterTrading/otcQuotes?l=zh-tw",
         "https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_list.php?l=zh-tw",
@@ -579,7 +556,6 @@ def _fetch_tw_stock_master() -> dict[str, str]:
             ct = res.headers.get("Content-Type", "")
             if "json" in ct:
                 data = res.json()
-                # 處理 JSON 格式的上櫃股票資料
                 items = data if isinstance(data, list) else data.get("aaData", data.get("data", []))
                 if isinstance(items, list):
                     for item in items:
@@ -591,7 +567,6 @@ def _fetch_tw_stock_master() -> dict[str, str]:
                 if name_to_ticker:
                     break
             else:
-                # HTML fallback — TPEx 頁面可能含有 <table>
                 page_text = res.content.decode("utf-8", errors="replace")
                 soup = BeautifulSoup(page_text, "html.parser")
                 for table in soup.find_all("table"):
@@ -612,19 +587,12 @@ def _fetch_tw_stock_master() -> dict[str, str]:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _get_tw_stock_name_by_code() -> dict[str, str]:
-    """從官方主檔反向取得 代碼→名稱 對照表（24 小時 cache，共用上游 cache）。"""
+    """從官方主檔反向取得 代碼→名稱 對照表。"""
     return {ticker: name for name, ticker in _fetch_tw_stock_master().items()}
 
 
 def resolve_ticker(raw: str) -> str | None:
-    """全方位容錯股票代碼 / 名稱解析（五層降級）。
-
-    層級 1a：別名 / 完整名稱精確比對（零網路請求）
-    層級 1b：TWSE / TPEx 官方股票主檔動態查詢（24h cache）
-    層級 2：純數字代碼 → 嘗試 .TW（上市）再 .TWO（上櫃）yfinance 驗證
-    層級 3：Yahoo Finance 全球搜尋 API（數字代碼）
-    層級 4：部分名稱片段模糊比對（2–4 字元）
-    """
+    """全方位容錯股票代碼 / 名稱解析（五層降級）。"""
     if not raw or not raw.strip():
         return None
 
@@ -632,7 +600,6 @@ def resolve_ticker(raw: str) -> str | None:
     if not text:
         return None
 
-    # ── 層級 1a：精確別名 / 名稱比對（最快、零網路） ──
     lower = text.lower()
     if lower in _ALIAS_MAP:
         return _ALIAS_MAP[lower]
@@ -641,12 +608,10 @@ def resolve_ticker(raw: str) -> str | None:
     if f"{text}.TW" in STOCK_INFO:
         return f"{text}.TW"
 
-    # ── 層級 1b：TWSE / TPEx 官方股票主檔動態查詢 ──
     master = _fetch_tw_stock_master()
     if text in master:
         return master[text]
 
-    # ── 層級 2：純數字代碼 → yfinance 驗證 ──
     if re.fullmatch(r"\d{4,6}", text):
         for suffix in (".TW", ".TWO"):
             candidate = f"{text}{suffix}"
@@ -660,12 +625,10 @@ def resolve_ticker(raw: str) -> str | None:
         if text in _CODE_TO_NAME:
             return f"{text}.TW"
 
-    # ── 層級 3：Yahoo Finance 全球搜尋 API ──
     api_result = _query_yahoo_search(text)
     if api_result:
         return api_result
 
-    # ── 層級 4：部分名稱片段模糊比對 ──
     if len(text) >= 2:
         candidates = set()
         for frag_len in range(min(len(text), 4), 1, -1):
@@ -680,7 +643,7 @@ def resolve_ticker(raw: str) -> str | None:
 
 
 def _candidate_tickers(ticker: str) -> list[str]:
-    """依序回傳可能有效的 Yahoo 代號：集中市場 / 上市 ETF（.TW）優先，櫃買（.TWO）次之。"""
+    """依序回傳可能有效的 Yahoo 代號。"""
     if ticker.endswith((".TW", ".TWO")):
         base = ticker.rsplit(".", 1)[0]
         suffix = ticker.rsplit(".", 1)[1].upper()
@@ -690,7 +653,7 @@ def _candidate_tickers(ticker: str) -> list[str]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _verify_ticker_via_yfinance(ticker: str) -> str | None:
-    """以 yfinance 驗證股票 / ETF 是否真實存在；成功回傳有效代號，失敗回傳 None。"""
+    """以 yfinance 驗證股票 / ETF 是否真實存在。"""
     for cand in _candidate_tickers(ticker):
         try:
             import yfinance as yf
@@ -703,26 +666,19 @@ def _verify_ticker_via_yfinance(ticker: str) -> str | None:
 
 
 def validate_stock_input(user_input: str) -> tuple[bool, str | None, str | None]:
-    """全方位容錯驗證：輸入任何格式的台股代號 / 名稱皆嘗試解析。
-
-    回傳 (是否有效, 正規化代號, 股票名稱)；無效時回傳 (False, None, None)。
-    只有在所有解析層級都失敗時才回傳 False。
-    """
+    """全方位容錯驗證：輸入任何格式的台股代號 / 名稱皆嘗試解析。"""
     ticker = resolve_ticker(user_input)
     if ticker is None:
         return False, None, None
 
-    # 直接查內建清單（最快）
     info = STOCK_INFO.get(ticker)
     if info is not None:
         return True, ticker, info["name"]
 
-    # 嘗試從 NAME_TO_CODE 反查名稱
     code_only = ticker.split(".")[0]
     if code_only in _CODE_TO_NAME:
         return True, ticker, _CODE_TO_NAME[code_only]
 
-    # yfinance 最終驗證（確保代號真實存在）
     valid_ticker = _verify_ticker_via_yfinance(ticker)
     if valid_ticker is None:
         return False, None, None
@@ -742,9 +698,8 @@ def build_search_error_message(bad_input: str) -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def lookup_stock_name(ticker: str) -> str:
-    """由 Yahoo 代號解析標準繁體中文股票名稱。優先中文，絕不回傳英文名。"""
+    """由 Yahoo 代號解析標準繁體中文股票名稱。"""
     code = ticker.replace(".TW", "").replace(".TWO", "").upper()
-    # 快查：內建字典（零網路）
     info = STOCK_INFO.get(ticker)
     if info and info.get("name"):
         return info["name"]
@@ -752,200 +707,21 @@ def lookup_stock_name(ticker: str) -> str:
         return _CODE_TO_NAME[code]
     if code in TW_STOCK_NAMES:
         return TW_STOCK_NAMES[code]
-    # 動態查詢：TWSE / TPEx 官方主檔
     code_to_name = _get_tw_stock_name_by_code()
     if ticker in code_to_name:
         return code_to_name[ticker]
     if code in code_to_name:
         return code_to_name[code]
-    # 爬蟲：Yahoo 奇摩股市（最權威中文來源）
     meta = get_tw_stock_metadata(ticker)
     if meta["name"]:
         return meta["name"]
-    # 最終退路：僅回傳純數字代碼（不顯示英文名）
     return code
 
 
-# ====================== 工具函式 ======================
-def _seed(key: str):
-    return np.random.default_rng(zlib.crc32(key.encode("utf-8")))
-
-
-@st.cache_data(ttl=15, show_spinner=False)
-def fetch_live_price(ticker: str):
-    """開盤期間抓取 1 分鐘等級最新成交資料（best-effort，失敗回傳 None）。"""
-    try:
-        import yfinance as yf
-
-        raw = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
-        if raw is None or raw.empty:
-            return None
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
-        close = raw["Close"].dropna()
-        if close.empty:
-            return None
-        last = float(close.iloc[-1])
-        first = float(close.iloc[0])
-        return {
-            "price": last,
-            "change": last - first,
-            "change_pct": (last - first) / first * 100 if first else 0.0,
-            "ts": close.index[-1],
-        }
-    except Exception:
-        return None
-
-
-def generate_mock_data(ticker: str, days: int = 180) -> pd.DataFrame:
-    """產生可重現的離線模擬 K 線資料（含 5 / 20 / 60 日均線）。
-
-    使用均值回歸 (Ornstein-Uhlenbeck) 隨機路徑，使末端價格收斂至基準價，
-    展示上較接近真實多空結構。
-    """
-    info = STOCK_INFO.get(ticker, {})
-    base_price = float(info.get("base_price", 60.0))
-    rng = _seed(ticker + "_kline")
-
-    drift = float(rng.normal(0.0009, 0.0006))
-    vol = float(rng.uniform(0.014, 0.024))
-    theta = 0.05
-    dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=days)
-
-    x = 0.0
-    xs = []
-    for _ in range(days):
-        x = x - theta * x + float(rng.normal(drift, vol))
-        xs.append(x)
-    xs = np.asarray(xs)
-    close = base_price * np.exp(xs - xs[-1])
-    open_ = close * (1 + rng.normal(0, 0.004, days))
-    high = np.maximum(open_, close) + np.abs(rng.normal(0, 0.006, days)) * close * 0.5
-    low = np.minimum(open_, close) - np.abs(rng.normal(0, 0.006, days)) * close * 0.5
-    volume = (rng.integers(25000, 140000, days) * (1 + np.abs(np.diff(xs, prepend=0.0)) * 40)).astype(int)
-
-    df = pd.DataFrame(
-        {
-            "Date": dates,
-            "Open": open_,
-            "High": high,
-            "Low": low,
-            "Close": close,
-            "Volume": volume,
-        }
-    )
-    df["MA5"] = df["Close"].rolling(5).mean()
-    df["MA20"] = df["Close"].rolling(20).mean()
-    df["MA60"] = df["Close"].rolling(60).mean()
-    return df
-
-
-_PERIOD_HISTORY = {
-    "日 K": "2y",
-    "週 K": "5y",
-    "月 K": "max",
-}
-
-
-def _download_daily(ticker: str, history_period: str = "1y"):
-    """抓取日 K 級資料；失敗或延遲時自動切換 Mock Data。
-
-    history_period：向 yfinance 請求的歷史資料時間跨度。繪製週 / 月 K 時需更長資料
-    （請依 _PERIOD_HISTORY 傳入 3y / 5y），否則 60 週線 / 20 月線 / 60 月線會因
-    資料根數不足而全部變成 NaN。
-    """
-    source = "Mock Data（離線模擬資料）"
-    df = None
-    try:
-        import yfinance as yf
-
-        raw = yf.download(ticker, period=history_period, interval="1d", progress=False, auto_adjust=True)
-        if raw is not None and not raw.empty:
-            if isinstance(raw.columns, pd.MultiIndex):
-                raw.columns = raw.columns.get_level_values(0)
-            raw = raw.reset_index()
-            cols = ["Date", "Open", "High", "Low", "Close", "Volume"]
-            present = [c for c in cols if c in raw.columns]
-            df = raw[present].copy()
-            df["Date"] = pd.to_datetime(df["Date"])
-            df = df.sort_values("Date").reset_index(drop=True)
-            if len(df) < 30:
-                df = None
-            else:
-                df["MA5"] = df["Close"].rolling(5).mean()
-                df["MA20"] = df["Close"].rolling(20).mean()
-                df["MA60"] = df["Close"].rolling(60).mean()
-                source = "Yahoo Finance 即時資料"
-    except Exception:
-        df = None
-
-    if df is None:
-        df = generate_mock_data(ticker)
-    return df, source
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_stock_data(ticker: str):
-    """閉盤時使用快取（5 分鐘），避免盤後過度請求 API。
-
-    開盤期間請直接呼叫 _download_daily（不走快取），以取得「動態浮動」的最新 K 線資料。
-    """
-    return _download_daily(ticker)
-
-
-def _month_rule() -> str:
-    try:
-        ver = tuple(int(x) for x in re.findall(r"\d+", pd.__version__)[:3]) or (1, 0, 0)
-    except Exception:
-        ver = (1, 0, 0)
-    return "ME" if ver >= (2, 2, 0) else "M"
-
-
-def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    d = df.set_index("Date")
-    out = (
-        d.resample(rule)
-        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
-        .dropna()
-    )
-    return out
-
-
-def resample_kline(df: pd.DataFrame, period: str) -> pd.DataFrame:
-    """將日 K 資料轉為指定週期（日 K / 週 K / 月 K）之 K 線 DataFrame。
-
-    重抽樣後以 min_periods=1 補上 5 / 20 / 60 期均線，即使前段資料根數不足
-    也能繪出連續折線，長天期均線（60 週線 / 20 月線 / 60 月線）不會中斷或消失。
-    """
-    if period == "日 K":
-        out = df.copy()
-    else:
-        rule = "W-FRI" if period == "週 K" else _month_rule()
-        out = resample_ohlc(df, rule).reset_index()
-        out.columns = [str(c) for c in out.columns]
-    close = out["Close"]
-    out["MA5"] = close.rolling(5, min_periods=1).mean()
-    out["MA20"] = close.rolling(20, min_periods=1).mean()
-    out["MA60"] = close.rolling(60, min_periods=1).mean()
-    return out.reset_index(drop=True)
-
-
-def generate_chip_data(ticker: str) -> dict:
-    rng = _seed(ticker + "_chip")
-    return {
-        "foreign": int(rng.integers(-6, 9)),
-        "it": int(rng.integers(-5, 7)),
-        "dealer": int(rng.integers(-4, 7)),
-        "large_holder": round(float(rng.uniform(58, 74)), 1),
-        "large_delta": round(float(rng.uniform(-1.5, 3.0)), 1),
-        "retail": round(float(rng.uniform(26, 42)), 1),
-        "main_diff": int(rng.integers(-8, 12)),
-        "margin_chg": round(float(rng.uniform(-5.0, 15.0)), 1),
-    }
-
+# ────────────────────── 產業 / 基本面 ──────────────────────
 
 def _is_etf(ticker: str) -> bool:
-    """判斷是否為 ETF：代碼以 00 開頭（如 0050、00878、0056、006208、00919 等）。"""
+    """判斷是否為 ETF。"""
     code = ticker.split(".")[0]
     return code.startswith("00")
 
@@ -953,7 +729,6 @@ def _is_etf(ticker: str) -> bool:
 ETF_INDUSTRY = "ETF / 指數股票型基金"
 FALLBACK_INDUSTRY = "綜合產業 / 未分類"
 
-# ── 層級 C：常見熱門台股產業備援字典（key 為純數字代碼） ──
 _FALLBACK_INDUSTRY_DICT: dict[str, str] = {
     "2330": "半導體業",
     "2317": "其他電子業",
@@ -977,13 +752,11 @@ _FALLBACK_INDUSTRY_DICT: dict[str, str] = {
     "2395": "電腦及週邊設備業",
     "2377": "半導體業",
     "3034": "半導體業",
-    "2303": "半導體業",
     "3231": "電腦及週邊設備業",
     "2371": "電腦及週邊設備業",
     "2356": "電腦及週邊設備業",
     "2347": "電腦及週邊設備業",
     "3037": "半導體業",
-    "2324": "電腦及週邊設備業",
     "2340": "光電業",
     "2388": "半導體業",
     "2603": "航運業",
@@ -1001,7 +774,6 @@ _FALLBACK_INDUSTRY_DICT: dict[str, str] = {
     "4904": "電信業",
     "4938": "電腦及週邊設備業",
     "2352": "電腦及週邊設備業",
-    "2399": "半導體業",
     "6547": "半導體業",
     "3661": "半導體業",
     "2049": "半導體業",
@@ -1009,58 +781,19 @@ _FALLBACK_INDUSTRY_DICT: dict[str, str] = {
     "8046": "半導體業",
     "5347": "半導體業",
     "3293": "電子零組件業",
-    "2327": "半導體業",
     "1590": "半導體業",
     "3653": "半導體業",
     "6669": "半導體業",
-    "3034": "半導體業",
-    "2301": "電腦及週邊設備業",
-    "2357": "電腦及週邊設備業",
     "2369": "電子零組件業",
-    "2376": "半導體業",
-    "2345": "半導體業",
-    "2301": "電腦及週邊設備業",
-    "2382": "電腦及週邊設備業",
-    "2356": "電腦及週邊設備業",
-    "2395": "電腦及週邊設備業",
-    "2347": "電腦及週邊設備業",
-    "3231": "電腦及週邊設備業",
-    "2352": "電腦及週邊設備業",
-    "2371": "電腦及週邊設備業",
-    "4938": "電腦及週邊設備業",
-    "2377": "半導體業",
-    "3037": "半導體業",
-    "3711": "半導體業",
-    "2379": "半導體業",
-    "2388": "半導體業",
-    "3661": "半導體業",
-    "6669": "半導體業",
-    "2303": "半導體業",
-    "2340": "光電業",
-    "2409": "光電業",
-    "3481": "光電業",
-    "2327": "半導體業",
-    "8046": "半導體業",
-    "5347": "半導體業",
-    "3443": "半導體業",
-    "2049": "半導體業",
-    "1590": "半導體業",
-    "3653": "半導體業",
-    "6547": "半導體業",
 }
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_tw_stock_metadata(ticker: str) -> dict:
-    """一次性從 Yahoo 奇摩股市取得台股中文名稱與產業類別（30 分鐘快取）。
-
-    回傳 {"name": "仁寶", "industry": "電腦週邊"}。
-    任何欄位取得失敗時回傳空字串，由呼叫端決定 fallback。
-    """
+    """從 Yahoo 奇摩股市取得台股中文名稱與產業類別（30 分鐘快取）。"""
     code = ticker.split(".")[0]
     result: dict[str, str] = {"name": "", "industry": ""}
 
-    # ── 層級 1：STOCK_INFO 硬編碼（最快） ──
     info = STOCK_INFO.get(ticker, {})
     if info.get("name"):
         result["name"] = info["name"]
@@ -1069,11 +802,9 @@ def get_tw_stock_metadata(ticker: str) -> dict:
     if result["name"] and result["industry"]:
         return result
 
-    # ── 層級 2：TW_STOCK_NAMES 快查 ──
     if not result["name"] and code in TW_STOCK_NAMES:
         result["name"] = TW_STOCK_NAMES[code]
 
-    # ── 層級 3：Yahoo 奇摩股市網頁爬蟲（最權威中文來源） ──
     yahoo_ticker = f"{code}.TW"
     url = f"https://tw.stock.yahoo.com/quote/{yahoo_ticker}"
     headers = {
@@ -1088,20 +819,17 @@ def get_tw_stock_metadata(ticker: str) -> dict:
         res.raise_for_status()
         html = res.text
 
-        # --- 名稱：從 <title> 或 og:title 提取 ---
         if not result["name"]:
             title_match = re.search(
                 r"<title>\s*([^\(（<]+?)\s*[\(（]", html
             )
             if title_match:
                 raw_name = title_match.group(1).strip()
-                # 清理：移除 "走勢圖" " Yahoo股市" 等尾巴
                 raw_name = re.sub(r"\s*(走勢圖|Yahoo股市| yahoo).*", "", raw_name, flags=re.IGNORECASE)
                 raw_name = raw_name.strip()
                 if raw_name and len(raw_name) <= 10:
                     result["name"] = raw_name
 
-        # --- 名稱：從 og:title 再嘗試一次 ---
         if not result["name"]:
             og_match = re.search(
                 r'property="og:title"\s+content="([^"]+)"', html
@@ -1113,7 +841,6 @@ def get_tw_stock_metadata(ticker: str) -> dict:
                 if name_part and len(name_part) <= 10:
                     result["name"] = name_part
 
-        # --- 名稱：從 meta description 提取 ---
         if not result["name"]:
             desc_match = re.search(
                 r'name="description"\s+content="([^"]*?)\(', html
@@ -1123,13 +850,11 @@ def get_tw_stock_metadata(ticker: str) -> dict:
                 if desc_name and len(desc_name) <= 10 and re.search(r"[\u4e00-\u9fff]", desc_name):
                     result["name"] = desc_name
 
-        # --- 產業：regex 搜尋 "sectorName":"xxx" ---
         if not result["industry"]:
             sector_match = re.search(r'"sectorName"\s*:\s*"([^"]+)"', html)
             if sector_match:
                 result["industry"] = sector_match.group(1)
 
-        # --- 產業：從 ySector 標記取得 ---
         if not result["industry"]:
             ysector_match = re.search(r'"ySector"\s*:\s*"([^"]+)"', html)
             if ysector_match:
@@ -1138,14 +863,11 @@ def get_tw_stock_metadata(ticker: str) -> dict:
     except requests.RequestException:
         pass
 
-    # ── 層級 4：yfinance 退路（僅補不足的欄位） ──
     try:
         import yfinance as yf
         yf_info = yf.Ticker(ticker).info or {}
         if not result["name"]:
-            # 優先取 shortName（通常較短），避免 longName 是英文全名
             yf_name = yf_info.get("shortName") or yf_info.get("longName") or ""
-            # 若取得的是純英文，放棄（不覆蓋空值讓 fallback 字典處理）
             if yf_name and re.search(r"[\u4e00-\u9fff]", yf_name):
                 result["name"] = yf_name
         if not result["industry"]:
@@ -1159,6 +881,7 @@ def get_tw_stock_metadata(ticker: str) -> dict:
 
 
 def get_fundamental(ticker: str) -> dict:
+    """取得基本面數據（景氣週期、缺貨題材、庫存、Beta、產業等）。"""
     info = STOCK_INFO.get(ticker, {})
     code = ticker.split(".")[0]
 
@@ -1170,7 +893,6 @@ def get_fundamental(ticker: str) -> dict:
         meta = get_tw_stock_metadata(ticker)
         industry = meta["industry"] or _FALLBACK_INDUSTRY_DICT.get(code, FALLBACK_INDUSTRY)
 
-    # 從 yfinance info 取得基本面數據
     yf_info = {}
     try:
         import yfinance as yf
