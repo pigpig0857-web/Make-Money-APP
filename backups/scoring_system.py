@@ -317,20 +317,27 @@ def compute_ultimate_diagnosis(df: pd.DataFrame) -> dict:
 
 
 def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
-    """渲染 AI 三維度綜合診斷卡片：基本面 + 技術面 + 籌碼關注度。"""
+    """渲染 AI 多重週期滑動評分診斷卡片。"""
     score = diag["score"]
-    icon = diag["icon"]
-    status = diag["status"]
+    signal_type = diag.get("signal_type", "")
+    action_advice = diag.get("action_advice", "")
+    score_breakdown = diag.get("score_breakdown", {})
 
-    if score >= 80:
+    icon = '🟢' if '大戶鎖碼' in signal_type else ('🟡' if '籌碼沉澱' in signal_type else '🔴')
+
+    if score >= 85:
         color = "#10B981"
         glow = "rgba(16,185,129,0.40)"
-    elif score >= 50:
+    elif score >= 70:
         color = "#F59E0B"
         glow = "rgba(245,158,11,0.35)"
     else:
         color = "#EF4444"
         glow = "rgba(239,68,68,0.40)"
+
+    trend_60d = score_breakdown.get("trend_60d", 0)
+    chip_20d = score_breakdown.get("chip_20d", 0)
+    momentum_7d = score_breakdown.get("momentum_7d", 0)
 
     st.markdown(
         f"""
@@ -340,32 +347,36 @@ def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
     <span style="font-size:1.8rem;">{icon}</span>
     <div>
-      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 三維度綜合診斷：{status}</div>
-      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">綜合評分 {score} / 100　｜　基本面(30) + 技術面(50) + 籌碼關注度(20)</div>
+      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 多重週期滑動評分：{signal_type}</div>
+      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">綜合評分 {score} / 100　｜　60日趨勢({trend_60d:.0f}/30) + 20日籌碼({chip_20d:.0f}/40) + 7日動能({momentum_7d:.0f}/30)</div>
     </div>
   </div>
 
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;">
-    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #3B82F6;">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📊 基本面體質</div>
-      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("fundamental_text", "基本面數據解析中...")}</div>
-    </div>
-    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #60A5FA;">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📈 技術面趨勢</div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #10B981;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📈 60日波段趨勢 ({trend_60d:.0f}/30)</div>
       <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("ma_text", "均線數據解析中...")}</div>
     </div>
-    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #A78BFA;">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">💪 動能與指標</div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #3B82F6;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">💪 20日主力籌碼 ({chip_20d:.0f}/40)</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("vol_text", "成交量解析中...")}</div>
+    </div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #F59E0B;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">🚀 7日爆發動能 ({momentum_7d:.0f}/30)</div>
       <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("rsi_text", "RSI 指標解析中...")}｜{diag.get("macd_text", "MACD 動能解析中...")}</div>
     </div>
-    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #FBBF24;">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📦 量能與籌碼</div>
-      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("vol_text", "成交量解析中...")}</div>
+    <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #A78BFA;">
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📊 基本面輔助</div>
+      <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("fundamental_text", "基本面數據解析中...")}</div>
     </div>
   </div>
 
+  <div style="background:rgba(255,255,255,0.08);border-radius:10px;padding:14px 18px;margin-bottom:10px;text-align:center;">
+    <div style="font-size:1.1rem;font-weight:900;color:#F9FAFB;letter-spacing:0.5px;">{action_advice}</div>
+  </div>
+
   <div style="color:#6B7280;font-size:0.75rem;margin-top:10px;text-align:right;">
-    三維度加權評分：基本面(30) + 技術面(50) + 籌碼關注度(20)　|　僅供參考
+    多重週期滑動評分：60日趨勢(30) + 20日籌碼(40) + 7日動能(30)　|　僅供參考
   </div>
 </div>
 """,
@@ -398,104 +409,216 @@ def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
         st.markdown(grid_html, unsafe_allow_html=True)
 
 
-def calculate_precise_ai_score(df: pd.DataFrame, chip: dict, fund: dict) -> tuple[int, str, str]:
-    """三維度全方位綜合評分（總分 100 分）：基本面(30) + 技術面(50) + 籌碼關注度(20)。
-    回傳 (score, icon, status)。
+def calculate_precise_ai_score(df: pd.DataFrame, chip: dict, fund: dict) -> dict:
+    """多重週期滑動評分（總分 100 分）：
+      60日波段趨勢 (30%) + 20日主力籌碼 (40%) + 7日爆發動能 (30%)
+
+    回傳 dict：
+      total_score   : 0~100 綜合分數
+      signal_type   : 燈號標籤
+      score_breakdown : { trend_60d, chip_20d, momentum_7d } 各自子分數
     """
     closes = df["Close"].astype(float)
     last = float(closes.iloc[-1])
     vol_now = float(df["Volume"].iloc[-1])
-    vol_ma5 = float(df["Volume"].tail(5).mean())
-    vol_ma20 = float(df["Volume"].tail(20).mean()) if len(df) >= 20 else vol_ma5
 
+    # ── 均線 ──
     ma20 = float(df["MA20"].iloc[-1]) if not pd.isna(df["MA20"].iloc[-1]) else last
     ma60 = float(df["MA60"].iloc[-1]) if not pd.isna(df["MA60"].iloc[-1]) else last
-    rsi_series = compute_rsi(closes, 14)
-    rsi_now = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
-    _, _, hist = compute_macd(closes)
-    hist_now = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0.0
 
     # ══════════════════════════════════════════════════════════
-    #  維度一：基本面 (Fundamental) — 權重 30 分
+    #  維度一：60日波段趨勢 — 權重 30 分 (30%)
+    #  判斷多頭排列（價 > MA20 > MA60）與中長期支撐力道
     # ══════════════════════════════════════════════════════════
-    fund_score = 0
+    trend_score = 0.0
 
-    # EPS & 獲利能力 (10分)
-    eps = fund.get("trailing_eps")
-    if eps is not None and eps > 0:
-        fund_score += 10
+    d60 = df.tail(60)
+    closes_60 = d60["Close"].astype(float)
+    ma20_series_60 = closes_60.rolling(20).mean()
+    ma60_series_60 = closes_60.rolling(60).mean()
 
-    # 本益比 P/E Ratio (10分)
-    pe = fund.get("pe_ratio")
-    if pe is not None and 10 <= pe <= 25:
-        fund_score += 10
+    # (a) 均線多頭排列判定 — 最高 15 分
+    if last > ma20 > ma60:
+        trend_score += 15
+    elif last > ma20:
+        trend_score += 8
+    elif last > ma60:
+        trend_score += 4
 
-    # ROE / 殖利率 (10分)
-    roe = fund.get("roe")
-    div_yield = fund.get("dividend_yield")
-    roe_ok = roe is not None and roe > 0.10
-    div_ok = div_yield is not None and div_yield > 0.04
-    if roe_ok or div_ok:
-        fund_score += 10
+    # (b) MA20 斜率 — 近 10 日 MA20 向上代表中期趨勢健康 — 最高 8 分
+    if len(ma20_series_60.dropna()) >= 10:
+        ma20_recent = ma20_series_60.dropna().tail(10).values
+        ma20_slope = ma20_recent[-1] - ma20_recent[0]
+        if ma20_slope > 0:
+            slope_ratio = min(ma20_slope / (last * 0.01 + 1e-9), 1.0)
+            trend_score += 8 * slope_ratio
+        else:
+            trend_score += max(0, 3 + 5 * (ma20_slope / (last * 0.01 + 1e-9)))
 
-    # ══════════════════════════════════════════════════════════
-    #  維度二：技術面 (Technical) — 權重 50 分
-    # ══════════════════════════════════════════════════════════
-    tech_score = 0
+    # (c) 支撐力道：近 60 日內回測 MA60 不破的次數 — 最高 7 分
+    support_touches = 0
+    if len(d60) >= 60 and not pd.isna(ma60_series_60).all():
+        ma60_vals = ma60_series_60.dropna()
+        for i in range(1, len(ma60_vals)):
+            prev_close = float(closes_60.iloc[closes_60.index.get_loc(ma60_vals.index[i - 1])] 
+                              if ma60_vals.index[i - 1] in closes_60.index else closes_60.iloc[-1])
+            curr_low = float(d60.loc[ma60_vals.index[i], "Low"]) if ma60_vals.index[i] in d60.index else prev_close
+            curr_ma60 = float(ma60_vals.iloc[i])
+            # 回測 MA60 附近（±2%）且未實質跌破 → 支撐有效
+            if abs(curr_low - curr_ma60) / (curr_ma60 + 1e-9) < 0.02 and prev_close > curr_ma60 * 0.98:
+                support_touches += 1
+    trend_score += min(7, support_touches * 1.5)
 
-    # MA 趨勢 (20分)
-    if last > ma20 and ma20 > ma60:
-        tech_score += 20
-    elif last > ma20 and ma20 <= ma60:
-        tech_score += 10
-    elif last < ma20 and last < ma60:
-        tech_score -= 10
-
-    # 動能指標 (20分)
-    if hist_now > 0:
-        tech_score += 10
-    if 50 < rsi_now < 70:
-        tech_score += 10
-    elif rsi_now > 70:
-        tech_score += 5
-
-    # 成交量與支撐壓力 (10分)
-    support = float(df["Close"].tail(20).min())
-    vol_above_ma5 = vol_now > vol_ma5
-    above_support = last > support
-    if vol_above_ma5 and above_support:
-        tech_score += 10
-    elif above_support:
-        tech_score += 5
+    trend_score = min(30, trend_score)
 
     # ══════════════════════════════════════════════════════════
-    #  維度三：籌碼與關注度 (Flow & Interest) — 權重 20 分
+    #  維度二：20日主力籌碼 — 權重 40 分 (40%)
+    #  近 20 個交易日法人/主力買超天數比例 + 籌碼集中度
+    #  過濾隔日沖與假買
     # ══════════════════════════════════════════════════════════
-    flow_score = 0
+    chip_score = 0.0
 
-    # 量能爆發度 (10分)：當日成交量 > 20日均量 1.5 倍
-    if vol_ma20 > 0 and vol_now > vol_ma20 * 1.5:
-        flow_score += 10
-    elif vol_ma20 > 0 and vol_now > vol_ma20 * 1.2:
-        flow_score += 5
+    foreign_days = chip.get("foreign", 0)       # 外資連買/賣天數（正=買）
+    it_days = chip.get("it", 0)                 # 投信連買/賣天數
+    dealer_days = chip.get("dealer", 0)         # 自營商連買/賣天數
+    main_diff = chip.get("main_diff", 0)        # 主力買賣家數差
+    large_holder = chip.get("large_holder", 50) # 大戶持股比重 %
+    large_delta = chip.get("large_delta", 0)    # 大戶持股比重變化
+    margin_chg = chip.get("margin_chg", 0)      # 融資餘額變動 %
 
-    # 市值大戶保護力 (10分)：大型權值股/核心 ETF
-    market_cap = fund.get("market_cap")
-    if market_cap is not None and market_cap >= 200_000_000_000:
-        flow_score += 10
+    # (a) 法人淨買天數綜合 — 最高 18 分
+    #     外資連續買超天數 / 20 → 比例 × 10
+    foreign_buy_ratio = max(foreign_days, 0) / 20.0
+    chip_score += min(10, foreign_buy_ratio * 10)
+
+    #     投信連續買超天數 / 20 → 比例 × 8
+    it_buy_ratio = max(it_days, 0) / 20.0
+    chip_score += min(8, it_buy_ratio * 8)
+
+    # (b) 主力買賣家數差 — 最高 8 分
+    #     正值越大 → 籌碼越集中到少數主力手中
+    if main_diff > 0:
+        chip_score += min(8, (main_diff / 20.0) * 8)
+    else:
+        chip_score += max(0, 3 + (main_diff / 20.0) * 3)
+
+    # (c) 大戶持股集中度變化 — 最高 8 分
+    if large_delta > 0:
+        chip_score += min(8, large_delta * 2)
+    elif large_delta < -1:
+        chip_score += max(0, 3 + large_delta * 1.5)
+    else:
+        chip_score += 3
+
+    # (d) 融資融券過濾：融資暴增代表散戶追高（扣分）— 最高 6 分（可扣）
+    if margin_chg > 8:
+        chip_score -= 4  # 融資暴增 → 散戶追高，隔日沖風險高
+    elif margin_chg > 3:
+        chip_score -= 1
+    elif margin_chg < -5:
+        chip_score += 4  # 融資大幅減碼 → 浮額清洗
+    elif margin_chg < -2:
+        chip_score += 2
+
+    # (e) 大戶持股比重基準加分
+    if large_holder >= 60:
+        chip_score += 4
+    elif large_holder >= 50:
+        chip_score += 2
+
+    chip_score = np.clip(chip_score, 0, 40)
 
     # ══════════════════════════════════════════════════════════
-    #  總分 = 基本面 + 技術面 + 籌碼關注度
+    #  維度三：7日爆發動能 — 權重 30 分 (30%)
+    #  近 7 日量能變化 + 近鮮度權重遞減（今日權重最高）
+    #  抓取精準發動點
     # ══════════════════════════════════════════════════════════
-    total = fund_score + tech_score + flow_score
+    momentum_score = 0.0
+
+    d7 = df.tail(7)
+    closes_7 = d7["Close"].astype(float)
+    volumes_7 = d7["Volume"].astype(float)
+    vol_ma20 = float(df["Volume"].tail(20).mean()) if len(df) >= 20 else float(df["Volume"].mean())
+
+    # (a) 近鮮度加權量能爆發 — 最高 15 分
+    #     權重：今日=7, 昨日=6, ..., 7日前=1  → 總和=28
+    weights = np.arange(1, 8, dtype=float)  # [1,2,3,4,5,6,7]
+    weights = weights / weights.sum()        # 歸一化
+
+    if vol_ma20 > 0:
+        vol_ratios_7 = (volumes_7.values / vol_ma20).astype(float)
+        weighted_vol_score = float(np.dot(vol_ratios_7, weights))
+        # weighted_vol_score ≈ 1.0 為正常；> 1.5 表示近期量能明顯放大
+        if weighted_vol_score > 1.5:
+            momentum_score += min(15, (weighted_vol_score - 1.0) * 15)
+        elif weighted_vol_score > 1.1:
+            momentum_score += (weighted_vol_score - 1.0) * 10
+        elif weighted_vol_score > 0.8:
+            momentum_score += (weighted_vol_score - 0.8) * 5
+
+    # (b) 7日價格動量（近鮮度加權漲幅）— 最高 10 分
+    if len(closes_7) >= 2:
+        pct_changes_7 = closes_7.pct_change().dropna().values
+        if len(pct_changes_7) > 0:
+            price_weights = weights[:len(pct_changes_7)]
+            price_weights = price_weights / price_weights.sum()
+            weighted_return = float(np.dot(pct_changes_7, price_weights))
+            # 加權報酬率 > 0 → 正向動量
+            if weighted_return > 0.02:
+                momentum_score += min(10, weighted_return * 200)
+            elif weighted_return > 0:
+                momentum_score += weighted_return * 150
+            elif weighted_return > -0.02:
+                momentum_score += max(0, 3 + weighted_return * 100)
+            else:
+                momentum_score += 0
+
+    # (c) 突破信號：今日收盤創近 20 日新高 — 最高 5 分
+    recent_20_high = float(df["High"].tail(20).max()) if len(df) >= 20 else last
+    if last >= recent_20_high * 0.99:
+        momentum_score += 5
+    elif last >= recent_20_high * 0.97:
+        momentum_score += 2
+
+    momentum_score = np.clip(momentum_score, 0, 30)
+
+    # ══════════════════════════════════════════════════════════
+    #  總分 = 趨勢(30) + 籌碼(40) + 動能(30)
+    # ══════════════════════════════════════════════════════════
+    total = int(round(float(trend_score + chip_score + momentum_score)))
     total = int(np.clip(total, 0, 100))
 
-    if total >= 80:
-        return total, "🟢", "多頭主升 (基本面+技術面極佳)"
-    elif total >= 50:
-        return total, "🟡", "震盪整理 (指標分歧/觀望)"
+    if total >= 85:
+        signal_type = "85分以上: 🟢大戶鎖碼波段股"
+    elif total >= 70:
+        signal_type = "70-84分: 🟡籌碼沉澱中"
     else:
-        return total, "🔴", "空頭防守 (趨勢偏弱)"
+        signal_type = "<70分: 🔴趨勢偏弱/觀望"
+
+    # ── 小白白話行動指引（結合分數與今日價格點位）──
+    close_now = float(closes.iloc[-1])
+    close_prev = float(closes.iloc[-2]) if len(closes) >= 2 else close_now
+    today_chg_pct = (close_now / close_prev - 1) * 100 if close_prev else 0.0
+
+    if total >= 85 and today_chg_pct <= 4.0:
+        action_advice = "🟢 今日最佳進場點（勝率極高）"
+    elif total >= 85 and today_chg_pct > 4.0:
+        action_advice = "🟡 趨勢強勁，但今日勿追高（建議等拉回）"
+    elif 70 <= total < 85:
+        action_advice = "🔵 籌碼沉澱中（適合分批建倉，不宜重倉）"
+    else:
+        action_advice = "🔴 趨勢偏弱，今日嚴禁進場（建議觀望）"
+
+    return {
+        "total_score": total,
+        "signal_type": signal_type,
+        "action_advice": action_advice,
+        "score_breakdown": {
+            "trend_60d": round(float(trend_score), 2),
+            "chip_20d": round(float(chip_score), 2),
+            "momentum_7d": round(float(momentum_score), 2),
+        },
+    }
 
 
 # ====================== 權威統一診斷（全站唯一來源） ======================
@@ -503,7 +626,12 @@ def get_global_precise_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund
     """全站唯一的權威 AI 診斷函式，同時輸出分數、燈號、狀態標籤。
     左邊排行榜與右邊詳細診斷卡片，一律呼叫此函式，確保 100% 同步。
     """
-    score, icon, status = calculate_precise_ai_score(df, chip, fund)
+    score_result = calculate_precise_ai_score(df, chip, fund)
+    score = score_result["total_score"]
+    signal_type = score_result["signal_type"]
+    action_advice = score_result["action_advice"]
+    score_breakdown = score_result["score_breakdown"]
+
     code = ticker.split(".")[0]
     name = lookup_stock_name(ticker)
     if name == code:
@@ -585,8 +713,9 @@ def get_global_precise_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund
         "code": code,
         "name": name,
         "score": score,
-        "icon": icon,
-        "status": status,
+        "signal_type": signal_type,
+        "action_advice": action_advice,
+        "score_breakdown": score_breakdown,
         "fundamental_text": fundamental_text,
         "ma_text": ma_text,
         "rsi_text": rsi_text,
@@ -672,7 +801,9 @@ def render_ai_scoreboard() -> None:
         st.caption("暫無排行榜資料")
         return
     for item in scoreboard[:15]:
-        label = f"【{item['score']}分 {item['icon']}】{item['name']} ({item['code']})"
+        signal = item.get('signal_type', '')
+        icon = '🟢' if '大戶鎖碼' in signal else ('🟡' if '籌碼沉澱' in signal else '🔴')
+        label = f"【{item['score']}分 {icon}】{item['name']} ({item['code']})"
         if st.button(label, key=f"rank_{item['ticker']}", use_container_width=True):
             st.session_state["selected_stock"] = item["ticker"]
             st.session_state["sidebar_key"] += 1
