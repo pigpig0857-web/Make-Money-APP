@@ -5,6 +5,7 @@
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from frontend.components.kline_chart import get_kline_chart, render_kline_chart
 from frontend.components.data_tables import (
@@ -472,6 +473,28 @@ def render_main_view():
 
     if "search_error" in st.session_state:
         st.error(st.session_state.pop("search_error"), icon="⚠️")
+
+    # 每次切換股票重新繪製 main_view 時，強制將主視窗區塊捲回最上方
+    components.html(
+        """
+        <script>
+            setTimeout(function() {
+                try {
+                    var mainContainer = window.parent.document.querySelector('section.main');
+                    if (mainContainer) {
+                        mainContainer.scrollTop = 0;
+                        mainContainer.scrollTo({ top: 0, behavior: 'instant' });
+                    }
+                    window.parent.scrollTo(0, 0);
+                } catch(e) {
+                    console.error('Scroll error:', e);
+                }
+            }, 100);
+        </script>
+        """,
+        height=0,
+        width=0
+    )
 
     container_key = f"main_content_holder_{ticker or 'home'}"
     with st.container(key=container_key):
