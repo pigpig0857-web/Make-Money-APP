@@ -72,6 +72,11 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
             low=df["Low"],
             close=df["Close"],
             name="K 線",
+            # 台股標準配色：紅 K 上漲 / 綠 K 下跌
+            increasing_line_color="#ef5350",
+            increasing_fillcolor="#ef5350",
+            decreasing_line_color="#26a69a",
+            decreasing_fillcolor="#26a69a",
             customdata=customdata,
             hovertemplate=(
                 "<b>%{x|%Y-%m-%d}</b><br>"
@@ -103,15 +108,22 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
             col=1,
         )
 
-    vol_colors = ["#22c55e" if c >= o else "#ef4444" for c, o in zip(df["Close"], df["Open"])]
+    # ── 成交量整備：股 → 張（台股 1 張 = 1000 股），並壓制極端值避免量能圖被單筆異常拉扁 ──
+    vol_lots = df["Volume"].astype(float) / 1000.0
+    vol_cap = float(np.nanpercentile(vol_lots, 99.9)) if len(vol_lots) else 0.0
+    vol_plot = vol_lots.clip(upper=max(vol_cap, 0.0))
+
+    # 台股配色對齊 K 線：收 >= 開（紅 K）→ 紅量；收 < 開（綠 K）→ 綠量
+    vol_colors = ["#ef5350" if c >= o else "#26a69a" for c, o in zip(df["Close"], df["Open"])]
     fig.add_trace(
         go.Bar(
             x=df["Date"],
-            y=df["Volume"],
+            y=vol_plot,
             name="成交量",
             marker_color=vol_colors,
             marker_line_width=0,
-            hovertemplate="成交量 %{y:,.0f} 張<extra></extra>",
+            customdata=vol_lots.to_numpy(),
+            hovertemplate="成交量 %{customdata[0]:,.0f} 張<extra></extra>",
         ),
         row=2,
         col=1,
@@ -122,7 +134,7 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
     fig.add_annotation(
         x=df["Date"].iloc[-1],
         y=resistance,
-        text=f"壓力位 {resistance:.1f}",
+        text=f"壓力: {resistance:.1f}",
         showarrow=False,
         xanchor="right",
         yshift=10,
@@ -131,7 +143,7 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
     fig.add_annotation(
         x=df["Date"].iloc[-1],
         y=support,
-        text=f"支撐位 {support:.1f}",
+        text=f"支撐: {support:.1f}",
         showarrow=False,
         xanchor="right",
         yshift=-10,

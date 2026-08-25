@@ -25,10 +25,10 @@ def render_sidebar():
                 '-webkit-background-clip:text;background-clip:text;'
                 '-webkit-text-fill-color:transparent;color:transparent;'
                 'filter:drop-shadow(0 2px 3px rgba(180,120,0,0.30));">'
-                '💰 財神爺選股</div>',
+                '💰 財神爺 AI 智股通</div>',
                 unsafe_allow_html=True,
             )
-            st.caption("台股智慧投資分析助理（教學用途）")
+            st.caption("台股 AI 操盤與籌碼分析助理（教學用途）")
 
             ticker_input = st.text_input(
                 "股票代號 / 名稱",

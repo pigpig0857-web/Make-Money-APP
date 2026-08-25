@@ -320,15 +320,17 @@ def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
     """渲染 AI 多重週期滑動評分診斷卡片。"""
     score = diag["score"]
     signal_type = diag.get("signal_type", "")
-    action_advice = diag.get("action_advice", "")
+    advice_no_position = diag.get("advice_no_position", diag.get("action_advice", ""))
+    advice_has_position = diag.get("advice_has_position", "")
     score_breakdown = diag.get("score_breakdown", {})
 
     icon = '🟢' if '大戶鎖碼' in signal_type else ('🟡' if '籌碼沉澱' in signal_type else '🔴')
 
-    if score >= 85:
+    # 【門檻調整】卡片配色同步放寬：>=75 綠、>=60 黃、其餘紅
+    if score >= 75:
         color = "#10B981"
         glow = "rgba(16,185,129,0.40)"
-    elif score >= 70:
+    elif score >= 60:
         color = "#F59E0B"
         glow = "rgba(245,158,11,0.35)"
     else:
@@ -371,8 +373,21 @@ def render_ultimate_diagnosis_card(diag: dict, df: pd.DataFrame) -> None:
     </div>
   </div>
 
-  <div style="background:rgba(255,255,255,0.08);border-radius:10px;padding:14px 18px;margin-bottom:10px;text-align:center;">
-    <div style="font-size:1.1rem;font-weight:900;color:#F9FAFB;letter-spacing:0.5px;">{action_advice}</div>
+  <div style="background:rgba(255,255,255,0.08);border-radius:10px;padding:14px 18px;margin-bottom:10px;">
+    <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;">
+      <span style="font-size:1.15rem;line-height:1.4;">🛒</span>
+      <div>
+        <div style="font-size:0.75rem;font-weight:700;color:#9CA3AF;letter-spacing:1px;">未持股建議</div>
+        <div style="font-size:1.02rem;font-weight:900;color:#F9FAFB;line-height:1.5;">{advice_no_position}</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:10px;border-top:1px solid rgba(255,255,255,0.12);padding-top:10px;">
+      <span style="font-size:1.15rem;line-height:1.4;">💰</span>
+      <div>
+        <div style="font-size:0.75rem;font-weight:700;color:#9CA3AF;letter-spacing:1px;">已有持股建議</div>
+        <div style="font-size:1.02rem;font-weight:900;color:#F9FAFB;line-height:1.5;">{advice_has_position}</div>
+      </div>
+    </div>
   </div>
 
   <div style="color:#6B7280;font-size:0.75rem;margin-top:10px;text-align:right;">
@@ -487,18 +502,19 @@ def calculate_precise_ai_score(df: pd.DataFrame, chip: dict, fund: dict) -> dict
     margin_chg = chip.get("margin_chg", 0)      # 融資餘額變動 %
 
     # (a) 法人淨買天數綜合 — 最高 18 分
-    #     外資連續買超天數 / 20 → 比例 × 10
-    foreign_buy_ratio = max(foreign_days, 0) / 20.0
+    #     【放寬】外資連續買超天數 / 10 → 比例 × 10（原 20 日基準過苛）
+    foreign_buy_ratio = max(foreign_days, 0) / 10.0
     chip_score += min(10, foreign_buy_ratio * 10)
 
-    #     投信連續買超天數 / 20 → 比例 × 8
-    it_buy_ratio = max(it_days, 0) / 20.0
+    #     【放寬】投信連續買超天數 / 10 → 比例 × 8
+    it_buy_ratio = max(it_days, 0) / 10.0
     chip_score += min(8, it_buy_ratio * 8)
 
     # (b) 主力買賣家數差 — 最高 8 分
     #     正值越大 → 籌碼越集中到少數主力手中
+    #     【放寬】正差以 10 家為滿分基準（原 20 家）
     if main_diff > 0:
-        chip_score += min(8, (main_diff / 20.0) * 8)
+        chip_score += min(8, (main_diff / 10.0) * 8)
     else:
         chip_score += max(0, 3 + (main_diff / 20.0) * 3)
 
@@ -588,31 +604,33 @@ def calculate_precise_ai_score(df: pd.DataFrame, chip: dict, fund: dict) -> dict
     total = int(round(float(trend_score + chip_score + momentum_score)))
     total = int(np.clip(total, 0, 100))
 
-    if total >= 85:
-        signal_type = "85分以上: 🟢大戶鎖碼波段股"
-    elif total >= 70:
-        signal_type = "70-84分: 🟡籌碼沉澱中"
+    # 【門檻調整】放寬黃燈區間：>=75 綠燈、60~74 黃燈、<60 紅燈
+    if total >= 75:
+        signal_type = "75分以上: 🟢大戶鎖碼波段股（強勢）"
+    elif total >= 60:
+        signal_type = "60-74分: 🟡籌碼沉澱中"
     else:
-        signal_type = "<70分: 🔴趨勢偏弱/觀望"
+        signal_type = "<60分: 🔴趨勢偏弱/觀望"
 
-    # ── 小白白話行動指引（結合分數與今日價格點位）──
-    close_now = float(closes.iloc[-1])
-    close_prev = float(closes.iloc[-2]) if len(closes) >= 2 else close_now
-    today_chg_pct = (close_now / close_prev - 1) * 100 if close_prev else 0.0
-
-    if total >= 85 and today_chg_pct <= 4.0:
-        action_advice = "🟢 今日最佳進場點（勝率極高）"
-    elif total >= 85 and today_chg_pct > 4.0:
-        action_advice = "🟡 趨勢強勁，但今日勿追高（建議等拉回）"
-    elif 70 <= total < 85:
-        action_advice = "🔵 籌碼沉澱中（適合分批建倉，不宜重倉）"
+    # ── 獲利導向雙情境行動指引（未持股 / 已有持股）──
+    # 評分門檻維持嚴謹標準，不因產出燈號而放寬；指引僅依燈號層級映射。
+    if total >= 75:
+        advice_no_position = "🟢 今日最佳進場點（順勢突破，分批佈局）"
+        advice_has_position = "💪 持股請抱牢（多頭強勢，沿 5日/10日線移動停利）"
+    elif total >= 60:
+        advice_no_position = "🟡 觀望沉澱（動能有限，切勿追高，等待拉回支撐）"
+        advice_has_position = "⚠️ 建議分批獲利了結 / 設好停利（若破 20日線果斷減碼）"
     else:
-        action_advice = "🔴 趨勢偏弱，今日嚴禁進場（建議觀望）"
+        advice_no_position = "🔴 嚴禁進場（趨勢偏弱/主力離場，保留現金）"
+        advice_has_position = "🚨 建議果斷出場 / 避險（破位或主力出貨，提防擴大虧損）"
+    action_advice = advice_no_position  # 相容舊欄位：預設顯示未持股視角
 
     return {
         "total_score": total,
         "signal_type": signal_type,
         "action_advice": action_advice,
+        "advice_no_position": advice_no_position,
+        "advice_has_position": advice_has_position,
         "score_breakdown": {
             "trend_60d": round(float(trend_score), 2),
             "chip_20d": round(float(chip_score), 2),
@@ -630,6 +648,8 @@ def get_global_precise_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund
     score = score_result["total_score"]
     signal_type = score_result["signal_type"]
     action_advice = score_result["action_advice"]
+    advice_no_position = score_result["advice_no_position"]
+    advice_has_position = score_result["advice_has_position"]
     score_breakdown = score_result["score_breakdown"]
 
     code = ticker.split(".")[0]
@@ -715,6 +735,8 @@ def get_global_precise_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund
         "score": score,
         "signal_type": signal_type,
         "action_advice": action_advice,
+        "advice_no_position": advice_no_position,
+        "advice_has_position": advice_has_position,
         "score_breakdown": score_breakdown,
         "fundamental_text": fundamental_text,
         "ma_text": ma_text,

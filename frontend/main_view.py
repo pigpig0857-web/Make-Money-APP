@@ -8,6 +8,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from frontend.components.kline_chart import get_kline_chart, render_kline_chart
+from frontend.components.ai_diagnosis import (
+    get_cached_ai_diagnosis,
+    render_ultimate_diagnosis_card,
+)
 from frontend.components.data_tables import (
     get_market_status,
     setup_autorun,
@@ -46,6 +50,15 @@ from frontend.components.scroll_script import force_scroll_to_top
 # ====================== 手機版響應式 CSS ======================
 _RESPONSIVE_CSS = """
 <style>
+.ai-diagnosis-card {
+    background: linear-gradient(135deg, #1E222D 0%, #2A2E39 100%);
+    border-radius: 14px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
+    color: #F9FAFB;
+    font-family: 'Microsoft JhengHei', Arial, sans-serif;
+    line-height: 1.65;
+}
 @media (max-width: 768px) {
     .js-plotly-plot, .plot-container {
         max-height: 400px !important;
@@ -127,6 +140,52 @@ _RESPONSIVE_CSS = """
 """
 
 
+def _signed_number(value: float, digits: int = 2, suffix: str = "") -> str:
+    """正值補 +、負值補 -，零值不帶符號（例如 0.00%）。"""
+    if value > 0:
+        return f"+{value:.{digits}f}{suffix}"
+    if value < 0:
+        return f"-{abs(value):.{digits}f}{suffix}"
+    return f"{value:.{digits}f}{suffix}"
+
+
+def _tw_color(value: float) -> str:
+    """台股慣例顏色：漲亮紅 / 跌亮綠 / 平盤淡灰。"""
+    if value > 0:
+        return "#ff4d4f"
+    if value < 0:
+        return "#00e676"
+    return "#a0a0a0"
+
+
+def _tw_badge(value: float, text: str) -> str:
+    """台股漲跌 Badge：>0 半透明紅底 ↑、<0 半透明綠底 ↓、=0 淡灰無箭頭。"""
+    if value > 0:
+        arrow, bg = "↑", "rgba(255, 77, 79, 0.15)"
+    elif value < 0:
+        arrow, bg = "↓", "rgba(0, 230, 118, 0.15)"
+    else:
+        arrow, bg = "", "rgba(160, 160, 160, 0.15)"
+    fg = _tw_color(value)
+    inner = f"{arrow} {text}".strip()
+    return (
+        f'<span style="display:inline-block;background:{bg};color:{fg};padding:3px 12px;'
+        f'border-radius:999px;font-weight:800;font-size:0.88rem;">{inner}</span>'
+    )
+
+
+def _price_metric_card(label: str, value: str, badge_html: str) -> None:
+    """以 HTML/CSS 渲染指標卡片：標頭 + 主數字 + 漲跌 Badge。"""
+    st.markdown(
+        '<div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;'
+        'box-shadow:0 1px 3px rgba(0,0,0,0.06);height:100%;">'
+        f'<div style="color:#6b7280;font-size:0.86rem;font-weight:700;margin-bottom:4px;">{label}</div>'
+        f'<div style="font-weight:800;font-size:1.55rem;color:#ffffff !important;line-height:1.35;">{value}</div>'
+        f'<div style="margin-top:8px;">{badge_html}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_home_page():
     """首頁模式：熱門推薦與搜尋引導。"""
     if "home_search_sync" in st.session_state:
@@ -137,10 +196,10 @@ def _render_home_page():
         '<div style="display:flex;align-items:center;justify-content:center;gap:15px;margin-bottom:5px;">'
         '<img src="https://img.icons8.com/color/96/gold-bars.png" width="45" height="45" style="object-fit:contain;">'
         '<div style="font-size:42px;font-weight:900;letter-spacing:2px;color:#FFD700;'
-        'text-shadow:0 3px 6px rgba(180,120,0,0.40);">財神爺選股</div>'
+        'text-shadow:0 3px 6px rgba(180,120,0,0.40);">財神爺 AI 智股通</div>'
         '<img src="https://img.icons8.com/color/96/gold-bars.png" width="45" height="45" style="object-fit:contain;"></div>'
         '<div style="color:#b45309;font-size:0.98rem;font-weight:700;margin-top:14px;">'
-        '「富貴雙收 ‧ 點石成金 ｜ AI 智慧選股與技術診斷」</div>'
+        '「富貴雙收·點石成金｜AI 籌碼診斷與技術分析」</div>'
         '<div style="color:#6b7280;font-size:1.02rem;margin-top:10px;">'
         '輸入台股代號或名稱，或直接點選下方熱門標的，'
         '立即取得技術面 K 線、籌碼面、基本面與 AI 綜合診斷。</div>'
@@ -235,9 +294,24 @@ def _render_stock_dashboard(ticker: str, status: dict):
         levels = compute_levels(close_now)
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("目前股價 (NT$)", f"{close_now:,.2f}", delta=f"{chg_pct:+.2f}%")
-        c2.metric("當日漲跌幅", f"{chg_pct:+.2f}%", delta=f"{chg:+.2f} 元")
-        c3.metric("成交量", f"{vol_now / 1000:,.1f} 仟張", delta=f"較昨日 {vol_pct:+.1f}%")
+        with c1:
+            _price_metric_card(
+                "目前股價 (NT$)",
+                f"{close_now:,.2f}",
+                _tw_badge(chg_pct, f"{_signed_number(chg_pct)}%"),
+            )
+        with c2:
+            _price_metric_card(
+                "當日漲跌幅",
+                f'<span style="color:{_tw_color(chg_pct)};">{_signed_number(chg_pct)}%</span>',
+                _tw_badge(chg, f"{_signed_number(chg)} 元"),
+            )
+        with c3:
+            _price_metric_card(
+                "成交量",
+                f"{vol_now / 1000:,.1f} 仟張",
+                _tw_badge(vol_pct, f"較昨日 {_signed_number(vol_pct, digits=1)}%"),
+            )
 
         st.divider()
 
@@ -295,6 +369,12 @@ def _render_stock_dashboard(ticker: str, status: dict):
         render_kline_chart(fig_kline, ticker, view_lock=view_lock, uirevision=uirevision, period=kline_period)
 
         render_timeframe_cards(df, resample_ohlc(df, "W-FRI"), resample_ohlc(df, _month_rule()))
+
+        # ── AI 多重週期籌碼評分（快取 1 小時，重複檢視 0 秒讀取） ──
+        st.subheader("🤖 AI 多重週期籌碼評分")
+        with st.spinner("🤖 AI 多重週期籌碼分析中..."):
+            diag = get_cached_ai_diagnosis(ticker, df, chip, fund)
+        render_ultimate_diagnosis_card(diag)
 
         # ── 關鍵支撐 / 壓力 / 風控指標 ──
         st.subheader("關鍵價位與風控防線")

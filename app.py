@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-財神爺選股 — AI 智慧選股與技術診斷
+財神爺 AI 智股通 — AI 籌碼診斷與技術分析
 台股技術面 / 籌碼面 / 基本面 / 風險管理 / AI 綜合決策儀表板
 
 主入口：僅負責頁面初始化、session_state 預設值、呼叫 Sidebar 與 Main View。
@@ -13,7 +13,7 @@ from frontend.main_view import render_main_view
 
 # ====================== 頁面基本設定 ======================
 st.set_page_config(
-    page_title="財神爺選股｜AI 智慧選股與技術診斷",
+    page_title="財神爺 AI 智股通｜AI 籌碼診斷與技術分析",
     layout="wide",
     initial_sidebar_state="expanded",
 )

@@ -7,6 +7,8 @@
 
 import re
 import zlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -111,9 +113,40 @@ def fetch_stock_data(ticker: str):
 
 # ────────────────────── 即時報價 ──────────────────────
 
+TAIWAN_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _is_tw_session_now() -> bool:
+    """台股開盤時段：週一至週五 09:00-13:30（Asia/Taipei）。"""
+    now = datetime.now(TAIWAN_TZ)
+    minutes = now.hour * 60 + now.minute
+    return now.weekday() < 5 and 9 * 60 <= minutes <= 13 * 60 + 30
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _previous_close(ticker: str):
+    """取得昨日收盤價（剔除今日盤中未完成日 K 後的最後一筆收盤）。"""
+    import yfinance as yf
+
+    hist = yf.Ticker(ticker).history(period="5d", interval="1d")
+    if hist is None or hist.empty:
+        return None
+    today = datetime.now(TAIWAN_TZ).date()
+    hist = hist[[ts.date() < today for ts in hist.index]]
+    closes = hist["Close"].dropna()
+    if closes.empty:
+        return None
+    return float(closes.iloc[-1])
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def fetch_live_price(ticker: str):
-    """開盤期間抓取 1 分鐘等級最新成交資料。"""
+    """開盤期間抓取 1 分鐘等級最新成交資料（漲跌基準統一為昨日收盤價）。
+
+    開盤防呆：台股開盤時段（09:00-13:30）若取得的現價與昨日收盤價相同
+    （yfinance 資料延遲），改呼叫 ticker.history(period='1d', interval='1m')
+    取最後一筆 1 分鐘 K 線的 Close 作為即時現價。
+    """
     try:
         import yfinance as yf
 
@@ -125,14 +158,37 @@ def fetch_live_price(ticker: str):
         close = raw["Close"].dropna()
         if close.empty:
             return None
-        last = float(close.iloc[-1])
-        first = float(close.iloc[0])
-        return {
-            "price": last,
-            "change": last - first,
-            "change_pct": (last - first) / first * 100 if first else 0.0,
-            "ts": close.index[-1],
-        }
+        price = float(close.iloc[-1])
+        ts = close.index[-1]
+
+        try:
+            prev_close = _previous_close(ticker)
+        except Exception:
+            prev_close = None
+
+        # 開盤防呆：盤中現價仍等於昨日收盤 → 以 Ticker.history 1 分 K 最後一筆重取
+        if (
+            _is_tw_session_now()
+            and prev_close
+            and np.isclose(price, prev_close, rtol=0.0, atol=1e-6)
+        ):
+            try:
+                hist_1m = yf.Ticker(ticker).history(period="1d", interval="1m")
+                if hist_1m is not None and not hist_1m.empty:
+                    last_bar = hist_1m["Close"].dropna()
+                    if not last_bar.empty:
+                        price = float(last_bar.iloc[-1])
+                        ts = last_bar.index[-1]
+            except Exception:
+                pass
+
+        if not prev_close or prev_close <= 0:
+            return {"price": price, "change": 0.0, "change_pct": 0.0, "ts": ts}
+
+        # 統一漲跌計算：漲跌金額 = 最新現價 - 昨日收盤價；漲跌幅 % = 差額 / 昨收 * 100
+        change = price - prev_close
+        change_pct = (price - prev_close) / prev_close * 100
+        return {"price": price, "change": change, "change_pct": change_pct, "ts": ts}
     except Exception:
         return None
 
