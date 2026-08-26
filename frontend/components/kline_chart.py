@@ -216,6 +216,9 @@ def render_kline_chart(
 ) -> None:
     """渲染 K 線圖：在快取的 Figure 上疊加視角狀態後輸出。"""
     layout_update = {"uirevision": (uirevision if uirevision is not None else ticker)}
+    # 行動裝置手勢保證：強制 pan 模式——單指左右滑動平移 K 線、雙指捏合縮放，
+    # 與電腦版滑鼠滾輪縮放效果一致；於渲染層設定可不受舊快取 Figure 影響。
+    layout_update["dragmode"] = "pan"
     if view_lock is not None:
         layout_update["xaxis_range"] = view_lock["xaxis_range"]
         layout_update["yaxis_range"] = view_lock["yaxis_range"]
