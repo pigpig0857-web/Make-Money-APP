@@ -6,10 +6,12 @@ AI 多重週期滑動評分元件（Frontend — AI Diagnosis）
 評分架構（總分 100 分）：
   60日波段趨勢 (30) + 20日主力籌碼 (40) + 7日爆發動能 (30)
 
-行動指引（雙情境：未持股 / 已有持股）：
-  均線優先——站上月線（現價 >= 20MA）絕對不輸出紅燈，僅依主力買/賣超
-  分「積極關注 / 暫不追高」；跌破月線且主力持續賣超才一票否決紅燈。
-  不再使用綜合得分區間判斷。
+操作建議（評分 + 短線訊號綜合判定）：
+  < 50  低分格局：依短線爆量反彈訊號區分「暫不追高 / 觀望為宜」
+  50~69 中性轉強：少量試驗 / 觀察續抱
+  >= 70 高分強勢：積極關注 / 強勢續抱
+  低分格局額外引入 is_short_term_burst（量比>=1.5 / RSI>50 / MACD柱>0），
+  短線爆量反彈時不追高但也不急停損，無動能則保守觀望。
 
 效能：get_cached_ai_diagnosis 以 @st.cache_data(ttl=3600) 快取診斷結果，
 同支股票 1 小時內重複檢視直接自記憶體讀取（0 秒回應）；
@@ -65,17 +67,8 @@ def compute_macd(closes: pd.Series, fast: int = 12, slow: int = 26, signal: int 
     return dif, macd_bar, hist
 
 
-# ────────────────────── 均線優先雙情境建議 ──────────────────────
 
-_ADVICE_VETO_NO_POS = "🔴 嚴禁進場（趨勢偏弱/主力離場，保留現金）"
-_ADVICE_VETO_HAS_POS = "🚨 建議果斷出場/避險（破位或主力出貨，提防擴大虧損）"
-_ADVICE_ABOVE_BUY_NO_POS = "🟢 積極關注（多頭強勢，沿 5 日線操作）"
-_ADVICE_ABOVE_BUY_HAS_POS = "🚀 強勢續抱（沿 5 日線移動停利）"
-_ADVICE_ABOVE_SELL_NO_POS = "🟡 暫不追高（多頭但主力調節，觀望拉回）"
-_ADVICE_ABOVE_SELL_HAS_POS = "⚠️ 逢高獲利入袋（分批拉高落袋）"
-# 保守退路：跌破月線但主力未「持續」賣超（不構成紅燈條件）
-_ADVICE_BELOW_CALM_NO_POS = "🟡 等待回穩（跌破月線但主力未連續調節，暫勿急進）"
-_ADVICE_BELOW_CALM_HAS_POS = "⚠️ 收緊防守（以 20MA 為停損線，無力收復則減碼）"
+# ────────────────────── 短線爆量訊號判定 ──────────────────────
 
 
 def _main_force_signals(chip: dict) -> tuple[float, bool]:
@@ -125,60 +118,91 @@ def _chip_turn_label(chip: dict) -> str | None:
     return None
 
 
-def decide_action_advice(df: pd.DataFrame, chip: dict) -> tuple[str, str, str]:
-    """雙情境行動指引決策（均線優先版）。
+def decide_action_advice(
+    df: pd.DataFrame, chip: dict, total_score: int
+) -> tuple[str, str, str]:
+    """雙情境行動指引決策（評分 + 短線訊號綜合判定）。
 
     邏輯層級：
-      1. 現價 >= 20MA（站上月線）→ 均線優先，絕對不輸出紅燈：
-         主力買超 → 積極關注；主力賣超 → 暫不追高。
-      2. 現價 < 20MA 且 主力/法人持續賣超 → 一票否決紅燈
-         （嚴禁進場 / 果斷出場避險）。
-      3. 跌破月線但主力未持續賣超 → 保守黃燈退路（不誤殺）。
+      1. total_score < 50（低分格局）→ 依短線是否爆量反彈區分：
+         is_short_term_burst → 暫不追高 / 逢高減碼
+         否                → 觀望為宜 / 嚴設停損
+      2. 50 <= total_score < 70（中性轉強）→ 少量試驗 / 觀察續抱
+      3. total_score >= 70（高分強勢）→ 積極關注 / 強勢續抱
 
-    回傳：(advice_no_position, advice_has_position, decision_note)
+    回傳：(advice_no_position, advice_has_position, note_text)
     """
     closes = df["Close"].astype(float)
     last = float(closes.iloc[-1])
-    ma20_val = df["MA20"].iloc[-1]
-    ma20 = float(ma20_val) if not pd.isna(ma20_val) else last
+    ma20 = float(df["MA20"].iloc[-1]) if not pd.isna(df["MA20"].iloc[-1]) else last
+    ma60 = float(df["MA60"].iloc[-1]) if not pd.isna(df["MA60"].iloc[-1]) else last
 
-    main_20d, sell_3d = _main_force_signals(chip)
-    main_buying = main_20d >= 0
+    # ── 均線排列：多頭判定（文案避矛盾）──
+    is_ma_bullish = last > ma20 > ma60
 
-    # ── 除錯輸出：確保現價 / 月線 / 主力數據比對正確 ──
+    # ── 短線訊號：量能 vs 動能分開判定 ──
+    vol_ma20 = float(df["Volume"].tail(20).mean()) if len(df) >= 20 else float(df["Volume"].mean())
+    vol_ratio = float(df["Volume"].iloc[-1]) / vol_ma20 if vol_ma20 > 0 else 1.0
+    rsi_series = compute_rsi(closes, 14)
+    rsi_14 = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+    _, _, hist = compute_macd(closes)
+    macd_hist = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0.0
+
+    has_volume_burst = vol_ratio >= 1.5
+    has_momentum = (rsi_14 > 50) or (macd_hist > 0)
+    is_short_term_burst = has_volume_burst or has_momentum
+
     _debug_print(
-        f"[Debug Advice] 現價:{last}, 20MA:{ma20}, 主力:{main_20d}"
-        + ("（近3日三大法人持續賣超）" if sell_3d else "")
+        f"[Debug Advice] 總分:{total_score}, 短線:{is_short_term_burst}"
+        f"（量比={vol_ratio:.2f}{'✓爆量' if has_volume_burst else ''}, "
+        f"RSI={rsi_14:.1f}, MACD柱={macd_hist:+.2f}）"
+        f"｜MA多頭:{is_ma_bullish}"
     )
 
-    # ── 第一順位：站上月線 → 均線優先，禁止紅燈 ──
-    if last >= ma20:
-        if main_buying:
-            note = (
-                f"月線之上＋主力買超（{main_20d:+.0f}，"
-                f"現價 {last:.2f} >= 20MA {ma20:.2f}）→ 多頭強勢"
-            )
-            return _ADVICE_ABOVE_BUY_NO_POS, _ADVICE_ABOVE_BUY_HAS_POS, note
-        note = (
-            f"月線之上＋主力賣超（{main_20d:+.0f}，"
-            f"現價 {last:.2f} >= 20MA {ma20:.2f}）→ 觀望主力調節"
-        )
-        return _ADVICE_ABOVE_SELL_NO_POS, _ADVICE_ABOVE_SELL_HAS_POS, note
+    # ── 低分格局 ──
+    if total_score < 50:
+        if is_short_term_burst:
+            advice_no = "🟡 暫不追高（短線反彈訊號，但中長線趨勢尚未扭轉）"
+            advice_has = "⚠️ 逢高減碼（趁反彈分批落袋，嚴設 20MA 防守）"
+            if has_volume_burst:
+                burst_desc = "短線爆量反彈"
+            else:
+                burst_desc = "短線動能反彈"
+            if is_ma_bullish:
+                note = (
+                    f"💡 系統診斷：目前屬於「{burst_desc}」，股價雖維持多頭排列，"
+                    "但受限於籌碼/動能不足（MACD偏空），建議暫不追高。"
+                )
+            else:
+                note = (
+                    f"💡 系統診斷：目前屬於「{burst_desc}，但中長線仍受制於均線壓力」，"
+                    "宜防範解套賣壓。"
+                )
+        else:
+            advice_no = "🔴 觀望為宜（趨勢偏弱，靜待打底）"
+            advice_has = "🚨 嚴設停損（技術面偏弱，注意下行風險）"
+            if is_ma_bullish:
+                note = (
+                    "💡 系統診斷：股價雖維持多頭排列，但受限於籌碼/動能不足"
+                    "（MACD偏空），建議暫不追高。"
+                )
+            else:
+                note = (
+                    "💡 系統診斷：均線架構偏弱且動能不足，"
+                    "上方面臨均線反壓，宜保持觀望。"
+                )
+    # ── 中性轉強格局 ──
+    elif total_score < 70:
+        advice_no = "🟡 少量試驗 / 觀望拉回（觀察 20MA 支撐）"
+        advice_has = "📈 觀察續抱（沿 20MA 操作，跌破離場）"
+        note = "💡 系統診斷：個股處於區間震盪或轉強過渡期，可密切注意突破機會。"
+    # ── 高分強勢格局 ──
+    else:
+        advice_no = "🟢 積極關注（多頭強勢，可尋找買點）"
+        advice_has = "🚀 強勢續抱（多頭排列，沿 5 日線移動停利）"
+        note = "💡 系統診斷：技術面與籌碼面皆呈多頭排列，具備持續上攻動能。"
 
-    # ── 第二順位：跌破月線 → 僅在主力/法人持續賣超時紅燈 ──
-    if (not main_buying) and sell_3d:
-        note = (
-            f"一票否決：現價 {last:.2f} < 20MA {ma20:.2f}"
-            f"且主力淨賣超（{main_20d:+.0f}）、近3日持續出貨"
-        )
-        return _ADVICE_VETO_NO_POS, _ADVICE_VETO_HAS_POS, note
-
-    # ── 保守退路：跌破月線但主力未持續出貨 → 不誤判紅燈 ──
-    note = (
-        f"跌破月線（現價 {last:.2f} < 20MA {ma20:.2f}）"
-        f"但主力未持續賣超（{main_20d:+.0f}）→ 保守觀望"
-    )
-    return _ADVICE_BELOW_CALM_NO_POS, _ADVICE_BELOW_CALM_HAS_POS, note
+    return advice_no, advice_has, note
 
 
 def calculate_precise_ai_score(
@@ -429,11 +453,8 @@ def calculate_precise_ai_score(
         except Exception:
             score_delta = None
 
-    # ── 雙情境行動指引：均線優先（月線之上禁止紅燈）──
-    # 【重構】棄用原「綜合得分區間判斷」（>=75 / >=60 映射）。
-    # 現價 >= 20MA 時絕不輸出紅燈，僅依主力買/賣超分「積極關注 / 暫不追高」；
-    # 唯有跌破 20MA 且主力/法人持續賣超才一票否決輸出紅燈。
-    advice_no_position, advice_has_position, advice_decision = decide_action_advice(df, chip)
+    # ── 雙情境行動指引：評分 + 短線訊號綜合判定 ──
+    advice_no_position, advice_has_position, note_text = decide_action_advice(df, chip, total)
     action_advice = advice_no_position  # 相容舊欄位：預設顯示未持股視角
 
     # ── Debug Log：輸出各子項目得分，便於確認是資料傳錯還是算法過苛 ──
@@ -457,7 +478,7 @@ def calculate_precise_ai_score(
             f"大戶 {large_holder}%（{large_delta:+.1f}）／融資 {margin_chg:+.1f}%｜"
             f"RSI={rsi_now:.1f}　MACD柱={hist_now:+.2f}　量能加權比={weighted_vol_score:.2f}"
         )
-        _debug_print(f"[AI Advice] {advice_decision}")
+        _debug_print(f"[AI Advice] {note_text}")
         if score_delta is not None:
             delta_txt = f"較前日 {score_delta:+d} 分"
         else:
@@ -473,6 +494,7 @@ def calculate_precise_ai_score(
         "action_advice": action_advice,
         "advice_no_position": advice_no_position,
         "advice_has_position": advice_has_position,
+        "note_text": note_text,
         "score_breakdown": {
             "trend_60d": round(float(trend_score), 2),
             "chip_20d": round(float(chip_score), 2),
@@ -497,6 +519,7 @@ def get_global_precise_diagnosis(
     action_advice = score_result["action_advice"]
     advice_no_position = score_result["advice_no_position"]
     advice_has_position = score_result["advice_has_position"]
+    note_text = score_result["note_text"]
     score_breakdown = score_result["score_breakdown"]
     score_delta = score_result.get("score_delta")
     chip_turn = score_result.get("chip_turn")
@@ -588,6 +611,7 @@ def get_global_precise_diagnosis(
         "action_advice": action_advice,
         "advice_no_position": advice_no_position,
         "advice_has_position": advice_has_position,
+        "note_text": note_text,
         "score_breakdown": score_breakdown,
         "score_delta": score_delta,
         "chip_turn": chip_turn,
@@ -705,6 +729,14 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
     <div style="font-size: 15px; font-weight: 600; color: #ffffff;">
         💰 <span style="color: #a0a0a0; font-weight: 400;">已有持股建議：</span>{diag.get('advice_has_position', '無建議')}
     </div>
+</div>
+""", unsafe_allow_html=True)
+
+    note_text = diag.get("note_text")
+    if note_text:
+        st.markdown(f"""
+<div style="background:rgba(59,130,246,0.08);border-radius:8px;padding:10px 14px;margin-top:10px;border-left:3px solid #3B82F6;">
+  <div style="font-size:0.88rem;color:#93C5FD;line-height:1.55;">{note_text}</div>
 </div>
 """, unsafe_allow_html=True)
 

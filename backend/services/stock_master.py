@@ -265,7 +265,7 @@ TW_STOCK_NAMES = {
     "2880": "華南金",
     "2881": "富邦金",
     "2882": "國泰金",
-    "2883": "開發金",
+    "2883": "凱基金",
     "2884": "玉山金",
     "2885": "元大金",
     "2886": "兆豐金",
@@ -397,7 +397,8 @@ _ALIAS_MAP: dict[str, str] = {
     "元大金": "2885.TW",
     "永豐金": "2890.TW",
     "彰銀": "2801.TW",
-    "開發金": "2883.TW",
+    "凱基金": "2883.TW",
+    "開發金": "2883.TW",  # 舊名別名：更名前使用者仍可搜尋
     "新光金": "2888.TW",
     "中華電": "2412.TW",
     "遠傳": "4904.TW",
@@ -696,10 +697,47 @@ def build_search_error_message(bad_input: str) -> str:
     )
 
 
+def _is_cjk_name(name) -> bool:
+    """判斷名稱是否含中文字元（過濾 yfinance 對台股常回傳的英文羅馬拼音）。"""
+    if not name:
+        return False
+    return any("\u4e00" <= ch <= "\u9fff" for ch in str(name))
+
+
+def _fetch_yf_live_name(ticker: str):
+    """即時取得 yfinance info 的股票名稱（shortName → longName）。
+
+    【更名防呆】優先於寫死對照表，確保更名個股（如 2883 開發金 → 凱基金、
+    台新新光金控合併更名）顯示最新名稱；yfinance 對台股常回傳英文名，
+    故僅接受含中文字的名稱，避免畫面出現英文羅馬拼音。
+    """
+    try:
+        import yfinance as yf
+
+        info = yf.Ticker(ticker).info or {}
+        for key in ("shortName", "longName"):
+            name = info.get(key)
+            if _is_cjk_name(name):
+                return str(name).strip()
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def lookup_stock_name(ticker: str) -> str:
-    """由 Yahoo 代號解析標準繁體中文股票名稱。"""
+    """由 Yahoo 代號解析標準繁體中文股票名稱。
+
+    優先順序：yfinance 即時 info 名稱（含中文者）→ STOCK_INFO →
+    _CODE_TO_NAME → TW_STOCK_NAMES → 動態清單 → Yahoo 奇摩爬蟲 → 純代碼。
+    """
     code = ticker.replace(".TW", "").replace(".TWO", "").upper()
+
+    # ── 層級 0：即時 API 名稱（處理個股更名，如 2883 凱基金）──
+    live_name = _fetch_yf_live_name(ticker)
+    if live_name:
+        return live_name
+
     info = STOCK_INFO.get(ticker)
     if info and info.get("name"):
         return info["name"]
