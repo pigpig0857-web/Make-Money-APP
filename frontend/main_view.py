@@ -186,6 +186,14 @@ def _price_metric_card(label: str, value: str, badge_html: str) -> None:
     )
 
 
+def _handle_home_search() -> None:
+    """Callback：首頁搜尋（輸入框按 Enter 或點擊按鈕）時暫存輸入值。
+
+    只做 Session State 純寫入，驗證與跳轉由主流程處理。
+    """
+    st.session_state["pending_home_search"] = (st.session_state.get("home_search") or "").strip()
+
+
 def _render_home_page():
     """首頁模式：熱門推薦與搜尋引導。"""
     if "home_search_sync" in st.session_state:
@@ -207,22 +215,29 @@ def _render_home_page():
         unsafe_allow_html=True,
     )
 
-    with st.form(key="home_search_form"):
-        st.text_input(
-            "🔍 股票代號 / 名稱",
-            placeholder="例如：2330 或 台積電",
-            key="home_search",
-        )
-        home_submitted = st.form_submit_button("🔍 開始 AI 診斷", use_container_width=True, key="home_submit_btn")
-    if home_submitted:
-        valid, ticker_code, _ = validate_stock_input(st.session_state["home_search"])
+    # ── 搜尋：標準 Callback 機制（Enter 或點擊按鈕，一次即觸發）──
+    st.text_input(
+        "🔍 股票代號 / 名稱",
+        placeholder="例如：2330 或 台積電",
+        key="home_search",
+        on_change=_handle_home_search,
+    )
+    st.button(
+        "🔍 開始 AI 診斷",
+        use_container_width=True,
+        on_click=_handle_home_search,
+    )
+
+    if "pending_home_search" in st.session_state:
+        query = st.session_state.pop("pending_home_search")
+        valid, ticker_code, _ = validate_stock_input(query)
         if valid and ticker_code:
             st.session_state["current_ticker"] = ticker_code
             st.session_state["sidebar_key"] += 1
             force_scroll_to_top()
-            st.rerun()
+            st.rerun()  # 強制立即重新渲染畫面
         else:
-            st.session_state["search_error"] = build_search_error_message(st.session_state["home_search"])
+            st.session_state["search_error"] = build_search_error_message(query)
             st.rerun()
 
     st.markdown("### 🔥 熱門推薦標的 Quick Pick")
@@ -315,7 +330,15 @@ def _render_stock_dashboard(ticker: str, status: dict):
 
         st.divider()
 
-        # ── 技術面 K 線與型態診斷 ──
+        # ── 核心區塊（最上方）：AI 多重週期籌碼評分與建議（快取 1 小時，重複檢視 0 秒讀取）──
+        st.subheader("🤖 AI 多重週期籌碼評分與建議")
+        with st.spinner("🤖 AI 多重週期籌碼分析中..."):
+            diag = get_cached_ai_diagnosis(ticker, df, chip, fund)
+        render_ultimate_diagnosis_card(diag)
+
+        st.divider()
+
+        # ── 次要區塊：技術面 K 線與型態診斷 ──
         st.subheader("技術面：K 線與型態診斷")
 
         if "chart_view" not in st.session_state:
@@ -369,12 +392,6 @@ def _render_stock_dashboard(ticker: str, status: dict):
         render_kline_chart(fig_kline, ticker, view_lock=view_lock, uirevision=uirevision, period=kline_period)
 
         render_timeframe_cards(df, resample_ohlc(df, "W-FRI"), resample_ohlc(df, _month_rule()))
-
-        # ── AI 多重週期籌碼評分（快取 1 小時，重複檢視 0 秒讀取） ──
-        st.subheader("🤖 AI 多重週期籌碼評分")
-        with st.spinner("🤖 AI 多重週期籌碼分析中..."):
-            diag = get_cached_ai_diagnosis(ticker, df, chip, fund)
-        render_ultimate_diagnosis_card(diag)
 
         # ── 關鍵支撐 / 壓力 / 風控指標 ──
         st.subheader("關鍵價位與風控防線")

@@ -256,11 +256,14 @@ def render_kline_chart(
     ]
     if mobile:
         modebar_remove.append("toImage")
+    # 觸控裝置優化：啟用滾動/手勢縮放與平移，並常駐工具列供手機操作
+    # （電腦版行為不變——原本即顯示工具列、scrollZoom 已開啟）
     config = {
         "displaylogo": False,
         "responsive": True,
-        "scrollZoom": True,
-        "displayModeBar": False if mobile else True,
+        "scrollZoom": True,  # 允許單指/雙指滾動與手勢縮放
+        "displayModeBar": True,  # 顯示上方工具列（含縮放 / 平移控制，手機亦可見）
+        "showTips": False,
         "showAxisDragHandles": True,
         "modeBarButtonsToRemove": modebar_remove,
     }

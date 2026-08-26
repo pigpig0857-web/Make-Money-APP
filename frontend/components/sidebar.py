@@ -14,6 +14,16 @@ from backend.services.stock_master import (
 )
 
 
+def _handle_sidebar_search() -> None:
+    """Callback：輸入框按 Enter 或點擊搜尋鈕時觸發（標準 Streamlit Callback 機制）。
+
+    只做 Session State 純寫入——callback 與元件事件同步批次執行，
+    直接讀取已提交的輸入框值，徹底消除「需按 2~3 次」的生命週期不同步問題；
+    實際驗證與頁面跳轉由主流程統一處理（callback 內不可渲染元件）。
+    """
+    st.session_state["pending_search"] = (st.session_state.get("temp_stock_input") or "").strip()
+
+
 def render_sidebar():
     """渲染側邊欄：品牌標題、搜尋框、熱門推薦、回首頁按鈕。"""
     with st.sidebar:
@@ -30,21 +40,43 @@ def render_sidebar():
             )
             st.caption("台股 AI 操盤與籌碼分析助理（教學用途）")
 
-            ticker_input = st.text_input(
+            # ── 搜尋：標準 Callback 機制（輸入完按 Enter、或點擊按鈕，一次即觸發）──
+            st.text_input(
                 "股票代號 / 名稱",
                 placeholder="例如：2330.TW 或 台積電",
                 help="支援台股 4 碼代號（如 2330）或中文名（如 台積電）。",
+                key="temp_stock_input",
+                on_change=_handle_sidebar_search,
             )
-            if st.button("🔍 開始 AI 診斷", type="primary", use_container_width=True, key="btn_search_sidebar"):
-                valid, ticker_code, _ = validate_stock_input(ticker_input)
+            st.button(
+                "🔍 開始 AI 診斷",
+                type="primary",
+                use_container_width=True,
+                on_click=_handle_sidebar_search,
+            )
+
+            # Callback 觸發後於主流程驗證並跳轉（一次操作立即 rerun 生效）
+            if "pending_search" in st.session_state:
+                query = st.session_state.pop("pending_search")
+                valid, ticker_code, _ = validate_stock_input(query)
                 if valid and ticker_code:
                     st.session_state["current_ticker"] = ticker_code
                     st.session_state["sidebar_key"] += 1
                     force_scroll_to_top()
-                    st.rerun()
+                    st.rerun()  # 強制立即重新渲染畫面
                 else:
-                    st.session_state["search_error"] = build_search_error_message(ticker_input)
+                    st.session_state["search_error"] = build_search_error_message(query)
                     st.rerun()
+
+            # 隱藏輸入框右側的 Press Enter 提示
+            st.markdown(
+                """
+                <style>
+                div[data-testid="InputInstructions"] { display: none !important; }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
             st.markdown("**🔥 熱門推薦 Quick Pick**")
             for name, code in get_daily_trending_stocks():
