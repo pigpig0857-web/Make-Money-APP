@@ -19,12 +19,14 @@ st.set_page_config(
 )
 
 # ====================== Session State 初始化 ======================
-if "current_ticker" not in st.session_state:
-    st.session_state["current_ticker"] = None
-if "sidebar_key" not in st.session_state:
-    st.session_state["sidebar_key"] = 0
-if "scroll_to_top" not in st.session_state:
-    st.session_state["scroll_to_top"] = False
+if "selected_ticker" not in st.session_state:
+    st.session_state["selected_ticker"] = None
+if "target_ticker" not in st.session_state:
+    st.session_state["target_ticker"] = None
+if "loading_new" not in st.session_state:
+    st.session_state["loading_new"] = False
+if "search_input_box" not in st.session_state:
+    st.session_state["search_input_box"] = ""
 
 # ====================== 渲染 ======================
 render_sidebar()

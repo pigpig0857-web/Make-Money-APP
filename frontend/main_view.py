@@ -5,7 +5,6 @@
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from frontend.components.kline_chart import get_kline_chart, render_kline_chart
 from frontend.components.ai_diagnosis import (
@@ -40,11 +39,9 @@ from backend.services.stock_master import (
     get_daily_trending_stocks,
     resolve_ticker,
     build_search_error_message,
-    validate_stock_input,
     get_fundamental,
     lookup_stock_name,
 )
-from frontend.components.scroll_script import force_scroll_to_top
 
 
 # ====================== 手機版響應式 CSS ======================
@@ -186,19 +183,26 @@ def _price_metric_card(label: str, value: str, badge_html: str) -> None:
     )
 
 
-def _handle_home_search() -> None:
-    """Callback：首頁搜尋（輸入框按 Enter 或點擊按鈕）時暫存輸入值。
 
-    只做 Session State 純寫入，驗證與跳轉由主流程處理。
-    """
-    st.session_state["pending_home_search"] = (st.session_state.get("home_search") or "").strip()
+_FORCE_SCROLL_TOP_JS = """<script>
+function forceScrollTop() {
+    var topElem = window.parent.document.getElementById('page-top');
+    if (topElem) {
+        topElem.scrollIntoView({behavior: 'instant', block: 'start'});
+    }
+    var mainContainer = window.parent.document.querySelector('.main')
+        || window.parent.document.querySelector('[data-testid="stMainBlockContainer"]');
+    if (mainContainer) { mainContainer.scrollTop = 0; }
+    window.parent.scrollTo(0, 0);
+}
+forceScrollTop();
+setTimeout(forceScrollTop, 50);
+setTimeout(forceScrollTop, 150);
+</script>"""
 
 
 def _render_home_page():
-    """首頁模式：熱門推薦與搜尋引導。"""
-    if "home_search_sync" in st.session_state:
-        st.session_state["home_search"] = st.session_state.pop("home_search_sync")
-
+    """首頁模式：歡迎畫面與熱門推薦。"""
     st.markdown(
         '<div style="text-align:center;padding:48px 20px 8px;">'
         '<div style="display:flex;align-items:center;justify-content:center;gap:15px;margin-bottom:5px;">'
@@ -209,36 +213,11 @@ def _render_home_page():
         '<div style="color:#b45309;font-size:0.98rem;font-weight:700;margin-top:14px;">'
         '「富貴雙收·點石成金｜AI 籌碼診斷與技術分析」</div>'
         '<div style="color:#6b7280;font-size:1.02rem;margin-top:10px;">'
-        '輸入台股代號或名稱，或直接點選下方熱門標的，'
+        '於左側側邊欄輸入台股代號或名稱，或直接點選下方熱門標的，'
         '立即取得技術面 K 線、籌碼面、基本面與 AI 綜合診斷。</div>'
         '</div>',
         unsafe_allow_html=True,
     )
-
-    # ── 搜尋：標準 Callback 機制（Enter 或點擊按鈕，一次即觸發）──
-    st.text_input(
-        "🔍 股票代號 / 名稱",
-        placeholder="例如：2330 或 台積電",
-        key="home_search",
-        on_change=_handle_home_search,
-    )
-    st.button(
-        "🔍 開始 AI 診斷",
-        use_container_width=True,
-        on_click=_handle_home_search,
-    )
-
-    if "pending_home_search" in st.session_state:
-        query = st.session_state.pop("pending_home_search")
-        valid, ticker_code, _ = validate_stock_input(query)
-        if valid and ticker_code:
-            st.session_state["current_ticker"] = ticker_code
-            st.session_state["sidebar_key"] += 1
-            force_scroll_to_top()
-            st.rerun()  # 強制立即重新渲染畫面
-        else:
-            st.session_state["search_error"] = build_search_error_message(query)
-            st.rerun()
 
     st.markdown("### 🔥 熱門推薦標的 Quick Pick")
     hot_trending = get_daily_trending_stocks()
@@ -250,23 +229,23 @@ def _render_home_page():
                 key=f"hot_pick_{code}",
                 use_container_width=True,
             ):
-                st.session_state["current_ticker"] = code
-                st.session_state["home_search_sync"] = name
-                st.session_state["sidebar_key"] += 1
-                force_scroll_to_top()
+                st.session_state["selected_ticker"] = code
                 st.rerun()
 
     st.divider()
-    st.caption("點擊任一熱門標的，或於左側搜尋欄輸入股票代號 / 名稱後按「開始 AI 診斷」，即可進入完整分析。")
-    st.stop()
+    st.caption("於左側側邊欄輸入股票代號 / 名稱後按「開始 AI 診斷」，或點選上方熱門標的，即可進入完整分析。")
 
 
 def _render_stock_dashboard(ticker: str, status: dict):
-    """完整分析儀表板：標題 → 指標 → K 線 → 數據表格。"""
+    """完整分析儀表板（Phase 2：資料抓取 + 渲染 UI）。"""
+    import streamlit.components.v1 as _comp
+    _comp.html(_FORCE_SCROLL_TOP_JS, height=0)
+
     info = STOCK_INFO.get(ticker, {})
     stock_code = ticker.rsplit(".", 1)[0]
     stock_name = lookup_stock_name(ticker)
 
+    # ②③ 載入提示 + API 資料抓取
     with st.spinner("💰 財神爺正在讀取基本面、籌碼面與 K 線資料，請稍候..."):
         fund = get_fundamental(ticker)
         chip = generate_chip_data(ticker)
@@ -286,9 +265,8 @@ def _render_stock_dashboard(ticker: str, status: dict):
             st.markdown(f"# {stock_name} ({stock_code})")
         with header_right:
             if st.button("🏠 回到首頁", key="btn_back_home", use_container_width=True):
-                st.session_state["current_ticker"] = None
-                st.session_state["sidebar_key"] += 1
-                force_scroll_to_top()
+                st.session_state["selected_ticker"] = None
+                st.session_state["search_input_box"] = ""
                 st.rerun()
         st.caption(f"產業：{fund['industry']}　|　資料來源：{source}")
         render_market_badge(status)
@@ -555,49 +533,48 @@ def _render_stock_dashboard(ticker: str, status: dict):
 
 
 def render_main_view():
-    """主畫面總組裝入口。"""
+    """主畫面總組裝入口（兩階段渲染）。
+
+    Phase 1 (loading_new=True)：置頂 + 顯示目標標的 + 抓資料 → rerun
+    Phase 2 (loading_new=False)：渲染完整 Dashboard
+    """
     st.markdown(_RESPONSIVE_CSS, unsafe_allow_html=True)
+    st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 
     status = get_market_status()
     setup_autorun(status["is_open"])
 
-    ticker = st.session_state.get("current_ticker")
+    # ── Phase 1：loading_new → 置頂 + 顯示目標標的 + 抓資料 → rerun ──
+    if st.session_state.get("loading_new"):
+        st.session_state["loading_new"] = False
 
-    if ticker is not None and resolve_ticker(ticker) is None:
-        st.session_state["search_error"] = build_search_error_message(ticker)
-        st.session_state["current_ticker"] = None
-        ticker = None
+        target = st.session_state.get("target_ticker", "")
 
-    if "search_error" in st.session_state:
-        st.error(st.session_state.pop("search_error"), icon="⚠️")
+        # 驗證目標代號
+        if resolve_ticker(target) is None:
+            st.session_state["search_error"] = build_search_error_message(target)
+            st.session_state["target_ticker"] = None
+            st.rerun()
 
-    # 每次切換股票重新繪製 main_view 時，強制將主視窗區塊捲回最上方
-    components.html(
-        """
-        <script>
-            setTimeout(function() {
-                try {
-                    var mainContainer = window.parent.document.querySelector('section.main');
-                    if (mainContainer) {
-                        mainContainer.scrollTop = 0;
-                        mainContainer.scrollTo({ top: 0, behavior: 'instant' });
-                    }
-                    window.parent.scrollTo(0, 0);
-                } catch(e) {
-                    console.error('Scroll error:', e);
-                }
-            }, 100);
-        </script>
-        """,
-        height=0,
-        width=0
-    )
+        # 強制插入 JS 置頂
+        import streamlit.components.v1 as _comp
+        _comp.html(_FORCE_SCROLL_TOP_JS, height=0)
 
-    container_key = f"main_content_holder_{ticker or 'home'}"
-    with st.container(key=container_key):
-        st.markdown('<div id="main-top"></div>', unsafe_allow_html=True)
+        # 頂端明確顯示「正在診斷的股票名稱與代號」
+        display_name = lookup_stock_name(target)
+        st.title(f"🔍 正在載入 {display_name} ({target.rsplit('.', 1)[0]}) 診斷資料...")
+        with st.spinner("財神爺正在分析基本面、籌碼面與 K 線技術指標，請稍候..."):
+            st.session_state["selected_ticker"] = target
+            get_fundamental(target)
+            generate_chip_data(target)
+            fetch_stock_data(target)
 
-        if ticker is None:
-            _render_home_page()
+        st.rerun()
 
+    # ── Phase 2：渲染完整 Dashboard ──
+    ticker = st.session_state.get("selected_ticker")
+
+    if ticker:
         _render_stock_dashboard(ticker, status)
+    else:
+        _render_home_page()
