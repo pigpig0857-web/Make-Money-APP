@@ -15,6 +15,14 @@ from backend.services.stock_master import (
 
 def render_sidebar():
     """渲染側邊欄：品牌標題、搜尋框、熱門推薦、回首頁按鈕。"""
+    # ── 防禦式初始化：確保無論何種入口，首次按鈕點擊前已完成 Session State ──
+    if "target_ticker" not in st.session_state:
+        st.session_state["target_ticker"] = None
+    if "loading_new" not in st.session_state:
+        st.session_state["loading_new"] = False
+    if "stock_search_input" not in st.session_state:
+        st.session_state["stock_search_input"] = ""
+
     with st.sidebar:
         st.markdown('<div id="sidebar-top"></div>', unsafe_allow_html=True)
         st.markdown(
@@ -28,18 +36,21 @@ def render_sidebar():
         )
         st.caption("台股 AI 操盤與籌碼分析助理（教學用途）")
 
-        # ── 搜尋：設定新標的 + loading_new → render_main_view 處理兩階段渲染 ──
-        ticker_input = st.text_input("股票代號/名稱", key="search_input_box")
+        # ── 搜尋：st.form 一次性同步取值 + 觸發 Phase 1 ──
+        with st.form(key="search_form", clear_on_submit=False):
+            st.text_input("股票代號/名稱", key="stock_search_input")
+            search_submitted = st.form_submit_button("🚀 開始 AI 診斷", use_container_width=True)
 
-        if st.button("🔍 開始 AI 診斷", use_container_width=True):
-            if ticker_input.strip():
-                valid, ticker_code, _ = validate_stock_input(ticker_input.strip())
+        if search_submitted:
+            query = (st.session_state.get("stock_search_input") or "").strip()
+            if query:
+                valid, ticker_code, _ = validate_stock_input(query)
                 if valid and ticker_code:
                     st.session_state["target_ticker"] = ticker_code
                     st.session_state["loading_new"] = True
                     st.rerun()
                 else:
-                    st.session_state["search_error"] = build_search_error_message(ticker_input.strip())
+                    st.session_state["search_error"] = build_search_error_message(query)
 
         # 隱藏輸入框右側的 Press Enter 提示
         st.markdown(
@@ -61,8 +72,9 @@ def render_sidebar():
         st.divider()
         if st.button("🏠 回到首頁 / 重新搜尋", key="btn_home_sidebar", use_container_width=True):
             st.session_state["selected_ticker"] = None
+            st.session_state["target_ticker"] = None
             st.session_state["loading_new"] = False
-            st.session_state["search_input_box"] = ""
+            st.session_state["stock_search_input"] = ""
             st.rerun()
 
         st.caption("資料來源：優先使用 Yahoo Finance，離線或延遲時自動以 Mock Data 展示。")

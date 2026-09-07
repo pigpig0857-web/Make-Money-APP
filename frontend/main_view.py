@@ -229,7 +229,8 @@ def _render_home_page():
                 key=f"hot_pick_{code}",
                 use_container_width=True,
             ):
-                st.session_state["selected_ticker"] = code
+                st.session_state["target_ticker"] = code
+                st.session_state["loading_new"] = True
                 st.rerun()
 
     st.divider()
@@ -266,7 +267,9 @@ def _render_stock_dashboard(ticker: str, status: dict):
         with header_right:
             if st.button("🏠 回到首頁", key="btn_back_home", use_container_width=True):
                 st.session_state["selected_ticker"] = None
-                st.session_state["search_input_box"] = ""
+                st.session_state["target_ticker"] = None
+                st.session_state["loading_new"] = False
+                st.session_state["stock_search_input"] = ""
                 st.rerun()
         st.caption(f"產業：{fund['industry']}　|　資料來源：{source}")
         render_market_badge(status)
@@ -533,22 +536,34 @@ def _render_stock_dashboard(ticker: str, status: dict):
 
 
 def render_main_view():
-    """主畫面總組裝入口（兩階段渲染）。
+    """主畫面總組裝入口（兩階段渲染 + Strict Hierarchy 路由）。
 
-    Phase 1 (loading_new=True)：置頂 + 顯示目標標的 + 抓資料 → rerun
-    Phase 2 (loading_new=False)：渲染完整 Dashboard
+    路由規則（優先序由高至低）：
+    1. is_loading=True 或 (target_ticker 存在且 != selected_ticker) → Phase 1 載入
+    2. selected_ticker 存在 → Phase 2 渲染 Dashboard
+    3. 完全沒有 target 也沒有 selected → 首頁 / 熱門推薦
     """
+    # ── 防禦式初始化：確保首次執行即有正確的判定 ──
+    if "target_ticker" not in st.session_state:
+        st.session_state["target_ticker"] = None
+    if "loading_new" not in st.session_state:
+        st.session_state["loading_new"] = False
+
     st.markdown(_RESPONSIVE_CSS, unsafe_allow_html=True)
     st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 
     status = get_market_status()
     setup_autorun(status["is_open"])
 
-    # ── Phase 1：loading_new → 置頂 + 顯示目標標的 + 抓資料 → rerun ──
-    if st.session_state.get("loading_new"):
+    current_target = st.session_state.get("target_ticker")
+    current_selected = st.session_state.get("selected_ticker")
+    is_loading = bool(st.session_state.get("loading_new", False))
+
+    # ── 規則 1：Phase 1 載入流程 ──
+    if is_loading or (current_target and current_target != current_selected):
         st.session_state["loading_new"] = False
 
-        target = st.session_state.get("target_ticker", "")
+        target = current_target
 
         # 驗證目標代號
         if resolve_ticker(target) is None:
@@ -571,10 +586,10 @@ def render_main_view():
 
         st.rerun()
 
-    # ── Phase 2：渲染完整 Dashboard ──
-    ticker = st.session_state.get("selected_ticker")
+    # ── 規則 2：Phase 2 渲染 Dashboard ──
+    if current_selected:
+        _render_stock_dashboard(current_selected, status)
+        return
 
-    if ticker:
-        _render_stock_dashboard(ticker, status)
-    else:
-        _render_home_page()
+    # ── 規則 3：首頁 / 熱門推薦 ──
+    _render_home_page()

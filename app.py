@@ -25,8 +25,8 @@ if "target_ticker" not in st.session_state:
     st.session_state["target_ticker"] = None
 if "loading_new" not in st.session_state:
     st.session_state["loading_new"] = False
-if "search_input_box" not in st.session_state:
-    st.session_state["search_input_box"] = ""
+if "stock_search_input" not in st.session_state:
+    st.session_state["stock_search_input"] = ""
 
 # ====================== 渲染 ======================
 render_sidebar()
