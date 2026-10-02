@@ -7,10 +7,23 @@
 import streamlit as st
 
 from backend.services.stock_master import (
-    build_search_error_message,
     get_daily_trending_stocks,
-    validate_stock_input,
 )
+
+
+def _submit_stock_search():
+    # Commit the form request before any slow network validation can be interrupted.
+    st.session_state["pending_stock_query"] = st.session_state.get("stock_search_input", "").strip()
+    st.session_state.pop("search_error", None)
+
+
+def _return_home():
+    st.session_state["selected_ticker"] = None
+    st.session_state["target_ticker"] = None
+    st.session_state["loading_new"] = False
+    st.session_state["stock_search_input"] = ""
+    st.session_state.pop("pending_stock_query", None)
+    st.session_state.pop("search_error", None)
 
 
 def render_sidebar():
@@ -36,21 +49,13 @@ def render_sidebar():
         )
         st.caption("台股 AI 操盤與籌碼分析助理（教學用途）")
 
-        # ── 搜尋：st.form 一次性同步取值 + 觸發 Phase 1 ──
+        # Callback records the submitted value before the page starts rendering.
         with st.form(key="search_form", clear_on_submit=False):
             st.text_input("股票代號/名稱", key="stock_search_input")
-            search_submitted = st.form_submit_button("🚀 開始 AI 診斷", use_container_width=True)
-
-        if search_submitted:
-            query = (st.session_state.get("stock_search_input") or "").strip()
-            if query:
-                valid, ticker_code, _ = validate_stock_input(query)
-                if valid and ticker_code:
-                    st.session_state["target_ticker"] = ticker_code
-                    st.session_state["loading_new"] = True
-                    st.rerun()
-                else:
-                    st.session_state["search_error"] = build_search_error_message(query)
+            st.form_submit_button(
+                "🚀 開始 AI 診斷", use_container_width=True,
+                on_click=_submit_stock_search,
+            )
 
         # 隱藏輸入框右側的 Press Enter 提示
         st.markdown(
@@ -65,17 +70,15 @@ def render_sidebar():
         st.markdown("**🔥 熱門推薦 Quick Pick**")
         for name, code in get_daily_trending_stocks():
             if st.button(f"{name}　{code.replace('.TW', '')}", key=f"quick_{code}", use_container_width=True):
+                st.session_state.pop("pending_stock_query", None)
+                st.session_state.pop("search_error", None)
                 st.session_state["target_ticker"] = code
                 st.session_state["loading_new"] = True
                 st.rerun()
 
         st.divider()
-        if st.button("🏠 回到首頁 / 重新搜尋", key="btn_home_sidebar", use_container_width=True):
-            st.session_state["selected_ticker"] = None
-            st.session_state["target_ticker"] = None
-            st.session_state["loading_new"] = False
-            st.session_state["stock_search_input"] = ""
-            st.rerun()
+        st.button("🏠 回到首頁 / 重新搜尋", key="btn_home_sidebar",
+                  use_container_width=True, on_click=_return_home)
 
-        st.caption("資料來源：優先使用 Yahoo Finance，離線或延遲時自動以 Mock Data 展示。")
+        st.caption("資料來源：Yahoo Finance 與 PostgreSQL 真實行情。無資料時不評分，不產生模擬資料。")
         st.caption("交易時段（週一至五 09:00–13:30）將自動每 15 秒刷新頁面，呈現即時價格浮動。")

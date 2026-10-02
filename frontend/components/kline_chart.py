@@ -200,8 +200,8 @@ def _build_kline_figure(df: pd.DataFrame, period: str = "日 K") -> go.Figure:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_kline_chart(stock_id: str, period: str = "日 K") -> go.Figure:
-    """快取 K 線圖 Figure（快取鍵 = stock_id + period）。"""
+def get_kline_chart(stock_id: str, period: str = "日 K", price_policy_version="real-only-v1") -> go.Figure:
+    """快取真實 K 線；政策版本避免沿用舊版模擬圖表。"""
     df, _ = _download_daily(stock_id, _PERIOD_HISTORY.get(period, "2y"))
     kdf = resample_kline(df, period)
     return _build_kline_figure(kdf, period)

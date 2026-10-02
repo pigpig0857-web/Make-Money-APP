@@ -6,7 +6,7 @@
 
 import streamlit as st
 
-from frontend.components.kline_chart import get_kline_chart, render_kline_chart
+from frontend.components.kline_chart import get_kline_chart, render_kline_chart, _build_kline_figure
 from frontend.components.ai_diagnosis import (
     get_cached_ai_diagnosis,
     render_ultimate_diagnosis_card,
@@ -29,7 +29,8 @@ from backend.services.stock_fetcher import (
     _download_daily,
     fetch_stock_data,
     fetch_live_price,
-    generate_chip_data,
+    get_chip_data,
+    StockDataUnavailableError,
     resample_ohlc,
     resample_kline,
     _month_rule,
@@ -37,11 +38,15 @@ from backend.services.stock_fetcher import (
 from backend.services.stock_master import (
     STOCK_INFO,
     get_daily_trending_stocks,
-    resolve_ticker,
+    validate_stock_input,
     build_search_error_message,
     get_fundamental,
     lookup_stock_name,
 )
+from frontend.components.sidebar import _return_home
+from backend.services.analysis_repository import save_score_snapshot, load_score_history
+from frontend.components.backtest_panel import render_backtest_panel
+from frontend.components.research_panel import render_research_panel
 
 
 # ====================== 手機版響應式 CSS ======================
@@ -214,7 +219,7 @@ def _render_home_page():
         '「富貴雙收·點石成金｜AI 籌碼診斷與技術分析」</div>'
         '<div style="color:#6b7280;font-size:1.02rem;margin-top:10px;">'
         '於左側側邊欄輸入台股代號或名稱，或直接點選下方熱門標的，'
-        '立即取得技術面 K 線、籌碼面、基本面與 AI 綜合診斷。</div>'
+        '查看真實 K 線與技術評分；法人、營收與市場資訊作為輔助。</div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -229,6 +234,8 @@ def _render_home_page():
                 key=f"hot_pick_{code}",
                 use_container_width=True,
             ):
+                st.session_state.pop("pending_stock_query", None)
+                st.session_state.pop("search_error", None)
                 st.session_state["target_ticker"] = code
                 st.session_state["loading_new"] = True
                 st.rerun()
@@ -247,17 +254,22 @@ def _render_stock_dashboard(ticker: str, status: dict):
     stock_name = lookup_stock_name(ticker)
 
     # ②③ 載入提示 + API 資料抓取
-    with st.spinner("💰 財神爺正在讀取基本面、籌碼面與 K 線資料，請稍候..."):
+    with st.spinner("💰 財神爺正在讀取真實 K 線與基本面資料，請稍候..."):
         fund = get_fundamental(ticker)
-        chip = generate_chip_data(ticker)
-        if status["is_open"]:
-            df, source = _download_daily(ticker)
-            live = fetch_live_price(ticker)
-            if live is not None:
-                source += "（1 分鐘級即時報價）"
-        else:
-            df, source = fetch_stock_data(ticker)
-            live = None
+        chip = get_chip_data(ticker)
+        try:
+            if status["is_open"]:
+                df, source = _download_daily(ticker)
+                live = fetch_live_price(ticker)
+                if live is not None:
+                    source += "（1 分鐘級報價，可能延遲）"
+            else:
+                df, source = fetch_stock_data(ticker)
+                live = None
+        except StockDataUnavailableError as exc:
+            st.error(str(exc))
+            st.info("本專案已停用模擬行情。請確認網路後，再次提交搜尋。")
+            return
 
     with st.container(key=f"main_content_{ticker}"):
         # ── 頂部概覽 ──
@@ -265,12 +277,8 @@ def _render_stock_dashboard(ticker: str, status: dict):
         with header_left:
             st.markdown(f"# {stock_name} ({stock_code})")
         with header_right:
-            if st.button("🏠 回到首頁", key="btn_back_home", use_container_width=True):
-                st.session_state["selected_ticker"] = None
-                st.session_state["target_ticker"] = None
-                st.session_state["loading_new"] = False
-                st.session_state["stock_search_input"] = ""
-                st.rerun()
+            st.button("🏠 回到首頁", key="btn_back_home", use_container_width=True,
+                      on_click=_return_home)
         st.caption(f"產業：{fund['industry']}　|　資料來源：{source}")
         render_market_badge(status)
 
@@ -312,12 +320,45 @@ def _render_stock_dashboard(ticker: str, status: dict):
         st.divider()
 
         # ── 核心區塊（最上方）：AI 多重週期籌碼評分與建議（快取 1 小時，重複檢視 0 秒讀取）──
-        st.subheader("🤖 AI 多重週期籌碼評分與建議")
-        with st.spinner("🤖 AI 多重週期籌碼分析中..."):
-            diag = get_cached_ai_diagnosis(ticker, df, chip, fund)
-        render_ultimate_diagnosis_card(diag)
+        st.subheader("🤖 真實行情技術評分")
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_tw = datetime.now(ZoneInfo("Asia/Taipei"))
+        score_df = df
+        if now_tw.hour * 60 + now_tw.minute < 13 * 60 + 30:
+            score_df = df[df["Date"].dt.date < now_tw.date()].copy()
+        st.caption("僅使用已完成日 K 的趨勢、成交量、RSI 與 MACD；籌碼及基本面未計分，分數不是勝率。")
+        if not score_df.empty:
+            st.caption(f"評分行情截至：{score_df['Date'].iloc[-1]:%Y-%m-%d}")
+        score_ready = False
+        try:
+            with st.spinner("正在計算真實行情指標…"):
+                diag = get_cached_ai_diagnosis(ticker, score_df, {}, fund)
+            render_ultimate_diagnosis_card(diag)
+            score_ready = True
+            try:
+                inserted = save_score_snapshot(ticker, score_df, diag)
+                st.caption("本次評分已存入資料庫。" if inserted else "相同行情與診斷已記錄，未重複新增。")
+            except Exception:
+                st.warning("評分已完成，但紀錄儲存失敗，請檢查資料庫或初始化資料表。")
+            with st.expander("評分歷史紀錄"):
+                if st.button("查看最近 10 筆評分", key=f"score_history_{ticker}"):
+                    try:
+                        history = load_score_history(ticker)
+                        if history:
+                            st.dataframe(history, hide_index=True)
+                        else:
+                            st.info("尚無評分紀錄。")
+                    except Exception:
+                        st.warning("暫時無法讀取評分紀錄。")
+        except ValueError as exc:
+            st.warning(str(exc))
+            st.info("暫不提供評分及操作建議，以下僅顯示可取得的歷史行情。")
 
         st.divider()
+
+        render_backtest_panel(ticker)
+        render_research_panel(ticker, df)
 
         # ── 次要區塊：技術面 K 線與型態診斷 ──
         st.subheader("技術面：K 線與型態診斷")
@@ -369,10 +410,17 @@ def _render_stock_dashboard(ticker: str, status: dict):
         view_lock = st.session_state["chart_view"].get(view_key) if apply_default else None
         uirevision = f"{ticker}|{kline_period}-v{st.session_state['chart_uirev']}"
 
-        fig_kline = get_kline_chart(ticker, kline_period)
+        try:
+            fig_kline = get_kline_chart(ticker, kline_period)
+        except StockDataUnavailableError:
+            st.warning("此週期的長期行情暫時無法取得，改用目前已取得的真實日 K 彙整。")
+            fig_kline = _build_kline_figure(kdf, kline_period)
         render_kline_chart(fig_kline, ticker, view_lock=view_lock, uirevision=uirevision, period=kline_period)
 
         render_timeframe_cards(df, resample_ohlc(df, "W-FRI"), resample_ohlc(df, _month_rule()))
+
+        if not score_ready:
+            return
 
         # ── 關鍵支撐 / 壓力 / 風控指標 ──
         st.subheader("關鍵價位與風控防線")
@@ -384,7 +432,7 @@ def _render_stock_dashboard(ticker: str, status: dict):
         st.divider()
 
         # ── AI 價位策略與風險評估 ──
-        strategy = compute_price_strategy(df, close_now)
+        strategy = compute_price_strategy(score_df, float(score_df["Close"].iloc[-1]))
         st.subheader("🎯 AI 價位策略與風險評估")
         st.caption("依據近期 20 / 60 日 K 線動態計算；僅供教學與研究參考，不構成投資建議。")
 
@@ -394,7 +442,7 @@ def _render_stock_dashboard(ticker: str, status: dict):
                 _strategy_block(
                     "🟢 最佳低風險進場區",
                     f"{strategy['buy_lo']:,.2f} ~ {strategy['buy_hi']:,.2f} 元",
-                    "此區間接近支撐，盈虧比最佳、風險最小",
+                    "依近期支撐計算的參考區間，尚未回測",
                     "#00FF7F",
                 )
             with p2:
@@ -421,175 +469,96 @@ def _render_stock_dashboard(ticker: str, status: dict):
 
             rr = strategy["rr"]
             if rr >= 2.0:
-                st.caption(f"風報比（盈虧比）＝ {rr:.1f}，理想值需 ≥ 2.0，目前達標、風險相對可控。")
+                st.caption(f"風報比（盈虧比）＝ {rr:.1f}，理想值需 ≥ 2.0，達到系統設定門檻，未代表交易勝率或安全程度。")
             elif rr >= 1.5:
-                st.caption(f"風報比（盈虧比）＝ {rr:.1f}，理想值需 ≥ 2.0，接近達標、可小量試單。")
+                st.caption(f"風報比（盈虧比）＝ {rr:.1f}，理想值需 ≥ 2.0，未達系統設定門檻，需繼續觀察。")
             else:
                 st.caption(f"風報比（盈虧比）＝ {rr:.1f}，理想值需 ≥ 2.0，尚未達標、追價風險偏高。")
 
             if close_now > strategy["buy_hi"] * 1.05:
                 st.warning("⚠️ 目前股價離支撐區較遠，追高風險較大，建議耐心等待回檔至低風險區附近再分批佈局。")
             elif strategy["buy_lo"] * 0.98 <= close_now <= strategy["buy_hi"] * 1.03:
-                st.info(f"✅ 當前價格位於相對低風險區間，且風報比達 {rr:.1f}，適合分批建立基本倉位。")
+                st.info(f"✅ 當前價格位於相對低風險區間，且風報比達 {rr:.1f}，仍需確認趨勢與風險，不能僅憑此區間進場。")
             else:
                 st.info(f"📊 目前股價位於低風險區上緣附近，可等待拉回 {strategy['buy_hi']:,.2f} 元以下再分批佈局。")
 
         st.divider()
 
-        # ── 籌碼面四大指標 ──
-        st.subheader("籌碼面：法人 / 大戶 / 主力 / 融資融券")
+        st.subheader("真實法人買賣超")
+        with st.spinner("正在讀取近 20 個交易日的官方法人資料…"):
+            chip = get_chip_data(ticker, [stamp.date() for stamp in score_df["Date"].tail(20)])
+        if chip["available"]:
+            st.caption(f"來源：{chip['source']}；單位：股；資料截至 {chip['latest_date']}；取得 {len(chip['rows'])}/{chip['expected_days']} 個交易日。")
+            latest = chip["rows"][-1]
+            foreign_col, trust_col, dealer_col = st.columns(3)
+            for col, label, key in [(foreign_col, "外資（含外資自營商）", "foreign_net"),
+                                     (trust_col, "投信", "trust_net"),
+                                     (dealer_col, "自營商", "dealer_net")]:
+                with col:
+                    st.metric(f"{label}最新日買賣超", f"{latest[key]:+,} 股")
+                    total = sum(row[key] for row in chip["rows"])
+                    st.caption(f"已取得 {len(chip['rows'])} 日累計：{total:+,} 股")
+            if not chip["complete"]:
+                st.warning("法人日期有缺漏，上述累計僅涵蓋已取得日期，不能解讀為完整 20 日累計。")
+            if not chip["stored"]:
+                st.warning("官方資料已取得，但本次儲存失敗。")
+            with st.expander("法人每日明細"):
+                st.dataframe(chip["rows"], hide_index=True)
+        st.info(chip["reason"])
 
-        cc1, cc2, cc3, cc4 = st.columns(4)
-        with cc1:
-            st.markdown("**法人動向**")
-            st.metric("外資", f"{chip['foreign']:+d} 日", streak_text(chip["foreign"], "外資"))
-            st.metric("投信", f"{chip['it']:+d} 日", streak_text(chip["it"], "投信"))
-            st.metric("自營商", f"{chip['dealer']:+d} 日", streak_text(chip["dealer"], "自營商"))
-            if chip["foreign"] > 0 and chip["it"] > 0:
-                st.success("外資與投信同步偏多，籌碼面助漲。")
-            elif chip["foreign"] < 0 and chip["it"] < 0:
-                st.warning("外資與投信同步賣超，籌碼面有壓。")
+        st.subheader("基本面：Yahoo Finance 查詢值")
+        st.caption("輔助資訊，未納入技術評分；缺少的欄位不以預設值代替。")
+        for label, key, percent in [
+            ("EPS", "trailing_eps", False), ("本益比", "pe_ratio", False),
+            ("ROE", "roe", True), ("Beta", "beta", False),
+        ]:
+            value = fund.get(key)
+            if value is None:
+                st.write(f"{label}：暫無資料")
             else:
-                st.info("法人多空分歧，以區間應對。")
-
-        with cc2:
-            st.markdown("**集保大戶 vs 散戶集中度**")
-            st.metric("大戶持股比重", f"{chip['large_holder']}%", f"{chip['large_delta']:+.1f} 百分點")
-            st.metric("散戶持股比重", f"{chip['retail']}%")
-            if chip["large_delta"] > 0:
-                st.success("大戶持股集中度上升，籌碼趨向集中。")
-            else:
-                st.warning("大戶持股鬆動、散戶進場，留意反轉風險。")
-
-        with cc3:
-            st.markdown("**主力買賣家數差**")
-            st.metric("買賣家數差", f"{chip['main_diff']:+d} 家")
-            if chip["main_diff"] > 0:
-                st.success("買超家數較多，短線主力偏多。")
-            elif chip["main_diff"] < 0:
-                st.warning("賣超家數較多，短線主力偏空。")
-            else:
-                st.info("主力買賣家數大致平衡。")
-
-        with cc4:
-            st.markdown("**融資融券氣象**")
-            st.metric("融資餘額變動", f"{chip['margin_chg']:+.1f}%")
-            if chip["margin_chg"] > 8:
-                st.warning("融資暴增警示：人氣過熱，高檔恐有多殺多風險。")
-            elif chip["margin_chg"] < -5:
-                st.success("融資大幅減碼，浮額清洗相對乾淨。")
-            else:
-                st.info("融資餘額變動溫和，籌碼相對穩定。")
-
-        st.divider()
-
-        # ── 基本面與缺貨題材 ──
-        st.subheader("基本面：景氣週期與缺貨漲價題材")
-
-        f1, f2 = st.columns(2)
-        with f1:
-            st.markdown("**產業景氣週期位階**")
-            render_pill(fund["cycle"], cycle_level(fund["cycle"]))
-            st.caption(
-                "谷底復甦 = 低基期轉折；暴衝 / 高峰期 = 獲利與股價風險同步放大；修正期 = 獲利下修進行式。"
-            )
-        with f2:
-            st.markdown("**產品缺貨與漲價效應**")
-            st.write(fund["shortage"])
-
-        st.divider()
-
-        # ── 風險管理 ──
-        st.subheader("風險管理：Check List")
-
-        r1, r2, r3 = st.columns(3)
-        with r1:
-            st.markdown("**庫存天數與去化速度**")
-            if fund["inventory"] == "偏高":
-                st.warning("庫存水位偏高，需留意下游去化放緩與毛利率壓力。")
-            elif fund["inventory"] == "偏低":
-                st.success("庫存水位偏低，供需相對健康。")
-            else:
-                st.success("庫存水位正常。")
-
-        with r2:
-            st.markdown("**資本支出 / 折舊警訊**")
-            if fund["capex"]:
-                st.warning("資本支出與折舊負擔較重，新品量產前可能侵蝕獲利。")
-            else:
-                st.success("資本支出與折舊負擔相對可控。")
-
-        with r3:
-            st.markdown("**大盤系統性風險連動度**")
-            st.metric("Beta（大盤連動度）", f"{fund['beta']:.2f}")
-            if fund["beta"] >= 1.2:
-                st.warning("Beta 偏高，市場修正時個股跌幅恐放大，需留意停損紀律。")
-            else:
-                st.success("Beta 低於 1，相對抗跌，系統性風險影響較小。")
-
-        st.divider()
-
-        st.caption(
-            "本 App 僅供教學與研究用途，所有數據（尤其 Mock Data）與診斷結果均不構成投資建議；"
-            "投資有風險，決策前請自行審慎評估。"
-        )
+                st.write(f"{label}：{value * 100 if percent else value:.2f}{'%' if percent else ''}")
+        st.caption("產業景氣、缺貨題材、庫存與資本支出尚無可驗證資料，暫不判斷。")
+        st.caption("規則已提供歷史回測工具，尚未完成跨股票與樣本外校準；請確認資料日期與條件後再作判斷。")
 
 
 def render_main_view():
-    """主畫面總組裝入口（兩階段渲染 + Strict Hierarchy 路由）。
-
-    路由規則（優先序由高至低）：
-    1. is_loading=True 或 (target_ticker 存在且 != selected_ticker) → Phase 1 載入
-    2. selected_ticker 存在 → Phase 2 渲染 Dashboard
-    3. 完全沒有 target 也沒有 selected → 首頁 / 熱門推薦
-    """
-    # ── 防禦式初始化：確保首次執行即有正確的判定 ──
-    if "target_ticker" not in st.session_state:
-        st.session_state["target_ticker"] = None
-    if "loading_new" not in st.session_state:
-        st.session_state["loading_new"] = False
+    """Resolve a persisted search request, then render its dashboard in this run."""
+    st.session_state.setdefault("target_ticker", None)
+    st.session_state.setdefault("loading_new", False)
 
     st.markdown(_RESPONSIVE_CSS, unsafe_allow_html=True)
     st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
-
     status = get_market_status()
-    setup_autorun(status["is_open"])
 
-    current_target = st.session_state.get("target_ticker")
-    current_selected = st.session_state.get("selected_ticker")
-    is_loading = bool(st.session_state.get("loading_new", False))
+    # Leave the request pending until validation finishes. An interrupted run
+    # can resume it without asking the user to click the submit button again.
+    if "pending_stock_query" in st.session_state:
+        query = st.session_state["pending_stock_query"]
+        with st.spinner(f"正在確認股票：{query or '（尚未輸入）'}…"):
+            valid, ticker, _ = validate_stock_input(query)
+        if valid and ticker:
+            st.session_state["target_ticker"] = ticker
+            st.session_state["loading_new"] = True
+            st.session_state.pop("search_error", None)
+        else:
+            st.session_state["search_error"] = build_search_error_message(query)
+        st.session_state.pop("pending_stock_query", None)
 
-    # ── 規則 1：Phase 1 載入流程 ──
-    if is_loading or (current_target and current_target != current_selected):
+    target = st.session_state.get("target_ticker")
+    selected = st.session_state.get("selected_ticker")
+    if target and (st.session_state["loading_new"] or target != selected):
+        # Search has already been validated; quick picks supply ticker codes.
+        # The dashboard fetches data once and shows its own loading spinner.
+        st.session_state["selected_ticker"] = target
         st.session_state["loading_new"] = False
+        selected = target
 
-        target = current_target
+    if st.session_state.get("search_error"):
+        st.sidebar.error(st.session_state["search_error"])
 
-        # 驗證目標代號
-        if resolve_ticker(target) is None:
-            st.session_state["search_error"] = build_search_error_message(target)
-            st.session_state["target_ticker"] = None
-            st.rerun()
-
-        # 強制插入 JS 置頂
-        import streamlit.components.v1 as _comp
-        _comp.html(_FORCE_SCROLL_TOP_JS, height=0)
-
-        # 頂端明確顯示「正在診斷的股票名稱與代號」
-        display_name = lookup_stock_name(target)
-        st.title(f"🔍 正在載入 {display_name} ({target.rsplit('.', 1)[0]}) 診斷資料...")
-        with st.spinner("財神爺正在分析基本面、籌碼面與 K 線技術指標，請稍候..."):
-            st.session_state["selected_ticker"] = target
-            get_fundamental(target)
-            generate_chip_data(target)
-            fetch_stock_data(target)
-
-        st.rerun()
-
-    # ── 規則 2：Phase 2 渲染 Dashboard ──
-    if current_selected:
-        _render_stock_dashboard(current_selected, status)
-        return
-
-    # ── 規則 3：首頁 / 熱門推薦 ──
-    _render_home_page()
+    if selected:
+        _render_stock_dashboard(selected, status)
+        # Enable periodic updates only after the requested page has rendered.
+        setup_autorun(status["is_open"])
+    else:
+        _render_home_page()

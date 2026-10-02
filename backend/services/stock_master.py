@@ -7,6 +7,7 @@
 
 import re
 import json
+import math
 
 import requests
 import streamlit as st
@@ -918,6 +919,7 @@ def get_tw_stock_metadata(ticker: str) -> dict:
     return result
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_fundamental(ticker: str) -> dict:
     """取得基本面數據（景氣週期、缺貨題材、庫存、Beta、產業等）。"""
     info = STOCK_INFO.get(ticker, {})
@@ -939,18 +941,27 @@ def get_fundamental(ticker: str) -> dict:
     except Exception:
         pass
 
+    def numeric(key):
+        value = yf_info.get(key)
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
     return {
-        "cycle": info.get("sector_cycle", "擴張成長"),
-        "shortage": info.get("shortage", "市場供需與漲價題材待觀察。"),
-        "inventory": info.get("inventory_status", "正常"),
-        "capex": info.get("capex_warning", False),
-        "beta": float(info.get("beta", 1.0)),
+        "cycle": None,
+        "shortage": None,
+        "inventory": None,
+        "capex": None,
+        "beta": numeric("beta"),
+        "source": "Yahoo Finance" if yf_info else None,
         "industry": industry,
-        "trailing_eps": yf_info.get("trailingEps"),
-        "forward_eps": yf_info.get("forwardEps"),
-        "pe_ratio": yf_info.get("trailingPE"),
-        "forward_pe": yf_info.get("forwardPE"),
-        "roe": yf_info.get("returnOnEquity"),
-        "dividend_yield": yf_info.get("dividendYield"),
-        "market_cap": yf_info.get("marketCap"),
+        "trailing_eps": numeric("trailingEps"),
+        "forward_eps": numeric("forwardEps"),
+        "pe_ratio": numeric("trailingPE"),
+        "forward_pe": numeric("forwardPE"),
+        "roe": numeric("returnOnEquity"),
+        "dividend_yield": numeric("dividendYield"),
+        "market_cap": numeric("marketCap"),
     }

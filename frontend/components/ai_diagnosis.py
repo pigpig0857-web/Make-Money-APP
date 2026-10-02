@@ -1,21 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
-AI 多重週期滑動評分元件（Frontend — AI Diagnosis）
-自 backups/scoring_system.py 安全移植至前端元件層，未更動備份檔。
+"""Verified daily-price technical score: trend 30 + momentum 30.
 
-評分架構（總分 100 分）：
-  60日波段趨勢 (30) + 20日主力籌碼 (40) + 7日爆發動能 (30)
-
-操作建議（評分 + 短線訊號綜合判定）：
-  < 50  低分格局：依短線爆量反彈訊號區分「暫不追高 / 觀望為宜」
-  50~69 中性轉強：少量試驗 / 觀察續抱
-  >= 70 高分強勢：積極關注 / 強勢續抱
-  低分格局額外引入 is_short_term_burst（量比>=1.5 / RSI>50 / MACD柱>0），
-  短線爆量反彈時不追高但也不急停損，無動能則保守觀望。
-
-效能：get_cached_ai_diagnosis 以 @st.cache_data(ttl=3600) 快取診斷結果，
-同支股票 1 小時內重複檢視直接自記憶體讀取（0 秒回應）；
-資料實際更新（K 線 / 籌碼 / 基本面變動）時自動重新計算。
+Chip inputs are excluded until real historical feeds are connected. Missing,
+unverified, stale or insufficient prices never produce scores. Score is a rule
+index, not a calibrated probability. Legacy backup modules are not called.
 """
 
 import sys
@@ -54,7 +42,9 @@ def compute_rsi(closes: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean()
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - 100 / (1 + rs)
+    rsi = 100 - 100 / (1 + rs)
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
+    return rsi.mask((avg_loss == 0) & (avg_gain == 0), 50.0)
 
 
 def compute_macd(closes: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
@@ -71,64 +61,17 @@ def compute_macd(closes: pd.Series, fast: int = 12, slow: int = 26, signal: int 
 # ────────────────────── 短線爆量訊號判定 ──────────────────────
 
 
-def _main_force_signals(chip: dict) -> tuple[float, bool]:
-    """組合主力動向代理指標（chip 籌碼欄位為連買賣天數與家數差）。
-
-    回傳：
-      main_20d : 主力近 20 日淨方向代理值（外資+投信+自營商連買賣天數合計，
-                 正 = 買超、負 = 賣超）
-      sell_3d  : 近 3 日主力持續賣超（三大法人同步連續賣超至少 3 日）
-    """
-    foreign_days = float(chip.get("foreign", 0))
-    it_days = float(chip.get("it", 0))
-    dealer_days = float(chip.get("dealer", 0))
-    main_20d = foreign_days + it_days + dealer_days
-    sell_3d = min(foreign_days, it_days, dealer_days) <= -3
-    return main_20d, sell_3d
-
-
-def _chip_prev_day(chip: dict) -> dict:
-    """回推一日前的籌碼快照：連買/連賣天數計數各退 1 天（其餘欄位沿用今日）。"""
-    def _shift(days: int) -> int:
-        if days > 0:
-            return days - 1
-        if days < 0:
-            return days + 1
-        return 0
-
-    prev = dict(chip)
-    for key in ("foreign", "it", "dealer"):
-        prev[key] = _shift(int(chip.get(key, 0)))
-    return prev
-
-
-def _chip_turn_label(chip: dict) -> str | None:
-    """比對今昨主力動向，偵測籌碼轉折並回傳標籤（無轉折回傳 None）。
-
-    昨日代理值：以連買賣天數各退 1 天估算後取三合一淨方向；
-    昨日合計為 0（中性）時併入對側判定——今日淨買視同「由賣轉買」、
-    今日淨賣視同「由買轉賣」，確保剛起漲 / 剛轉弱的個股也能被提醒。
-    """
-    main_now, _ = _main_force_signals(chip)
-    main_prev, _ = _main_force_signals(_chip_prev_day(chip))
-    if main_prev <= 0 < main_now:
-        return "🔄 主力由賣轉買"
-    if main_prev >= 0 > main_now:
-        return "⚠️ 主力由買轉賣"
-    return None
-
-
 def decide_action_advice(
-    df: pd.DataFrame, chip: dict, total_score: int
+    df: pd.DataFrame, chip: dict, total_score: int, debug_log: bool = True
 ) -> tuple[str, str, str]:
     """雙情境行動指引決策（評分 + 短線訊號綜合判定）。
 
     邏輯層級：
-      1. total_score < 50（低分格局）→ 依短線是否爆量反彈區分：
+      1. total_score < 36（低分格局）→ 依短線是否爆量反彈區分：
          is_short_term_burst → 暫不追高 / 逢高減碼
          否                → 觀望為宜 / 嚴設停損
-      2. 50 <= total_score < 70（中性轉強）→ 少量試驗 / 觀察續抱
-      3. total_score >= 70（高分強勢）→ 積極關注 / 強勢續抱
+      2. 36 <= total_score < 45（中性轉強）→ 少量試驗 / 觀察續抱
+      3. total_score >= 45（高分強勢）→ 積極關注 / 強勢續抱
 
     回傳：(advice_no_position, advice_has_position, note_text)
     """
@@ -152,7 +95,8 @@ def decide_action_advice(
     has_momentum = (rsi_14 > 50) or (macd_hist > 0)
     is_short_term_burst = has_volume_burst or has_momentum
 
-    _debug_print(
+    if debug_log:
+        _debug_print(
         f"[Debug Advice] 總分:{total_score}, 短線:{is_short_term_burst}"
         f"（量比={vol_ratio:.2f}{'✓爆量' if has_volume_burst else ''}, "
         f"RSI={rsi_14:.1f}, MACD柱={macd_hist:+.2f}）"
@@ -160,7 +104,7 @@ def decide_action_advice(
     )
 
     # ── 低分格局 ──
-    if total_score < 50:
+    if total_score < 36:
         if is_short_term_burst:
             advice_no = "🟡 暫不追高（短線反彈訊號，但中長線趨勢尚未扭轉）"
             advice_has = "⚠️ 逢高減碼（趁反彈分批落袋，嚴設 20MA 防守）"
@@ -171,7 +115,7 @@ def decide_action_advice(
             if is_ma_bullish:
                 note = (
                     f"💡 系統診斷：目前屬於「{burst_desc}」，股價雖維持多頭排列，"
-                    "但受限於籌碼/動能不足（MACD偏空），建議暫不追高。"
+                    "但技術動能仍不足（MACD偏空），建議暫不追高。"
                 )
             else:
                 note = (
@@ -183,7 +127,7 @@ def decide_action_advice(
             advice_has = "🚨 嚴設停損（技術面偏弱，注意下行風險）"
             if is_ma_bullish:
                 note = (
-                    "💡 系統診斷：股價雖維持多頭排列，但受限於籌碼/動能不足"
+                    "💡 系統診斷：股價雖維持多頭排列，但技術動能仍不足"
                     "（MACD偏空），建議暫不追高。"
                 )
             else:
@@ -192,7 +136,7 @@ def decide_action_advice(
                     "上方面臨均線反壓，宜保持觀望。"
                 )
     # ── 中性轉強格局 ──
-    elif total_score < 70:
+    elif total_score < 45:
         advice_no = "🟡 少量試驗 / 觀望拉回（觀察 20MA 支撐）"
         advice_has = "📈 觀察續抱（沿 20MA 操作，跌破離場）"
         note = "💡 系統診斷：個股處於區間震盪或轉強過渡期，可密切注意突破機會。"
@@ -200,9 +144,19 @@ def decide_action_advice(
     else:
         advice_no = "🟢 積極關注（多頭強勢，可尋找買點）"
         advice_has = "🚀 強勢續抱（多頭排列，沿 5 日線移動停利）"
-        note = "💡 系統診斷：技術面與籌碼面皆呈多頭排列，具備持續上攻動能。"
+        note = "💡 系統診斷：技術指標偏強，但尚未驗證籌碼與基本面，需等待進場條件確認。"
 
     return advice_no, advice_has, note
+
+
+def validate_scoring_frame(df):
+    if df.attrs.get("price_source") != "yfinance" or df.attrs.get("is_stale"):
+        raise ValueError("評分需要可驗證來源、未過期的真實行情。")
+    if len(df) < 120:
+        raise ValueError("至少需要 120 根真實且已完成的日 K 才能評分。")
+    price_values = df[["Open", "High", "Low", "Close", "Volume"]].to_numpy(dtype=float)
+    if not np.isfinite(price_values).all() or (price_values[:, :4] <= 0).any() or (price_values[:, 4] < 0).any():
+        raise ValueError("行情資料不完整，暫不評分。")
 
 
 def calculate_precise_ai_score(
@@ -213,20 +167,9 @@ def calculate_precise_ai_score(
     debug_log: bool = True,
     _compute_delta: bool = True,
 ) -> dict:
-    """多重週期滑動評分（總分 100 分）：
-      60日波段趨勢 (30%) + 20日主力籌碼 (40%) + 7日爆發動能 (30%)
+    """Score actual OHLCV only, with a maximum of 60 and no chip defaults."""
 
-    7日爆發動能細部組成：量能爆發(12) + 價格動量(9) + 突破信號(4) + RSI/MACD 動能確認(5)
-
-    debug_log=True 時 print 各子項目得分細節，便於確認是資料傳錯還是算法過苛。
-    回傳 dict：
-      total_score     : 0~100 綜合分數
-      signal_type     : 燈號標籤
-      action_advice   : 白話行動指引
-      score_breakdown : { trend_60d, chip_20d, momentum_7d } 各自子分數
-      score_delta     : 較前一日總分變化（int；資料不足或失敗時 None）
-      chip_turn       : 主力籌碼轉折標籤（無轉折 None）
-    """
+    validate_scoring_frame(df)
     closes = df["Close"].astype(float)
     last = float(closes.iloc[-1])
 
@@ -291,69 +234,9 @@ def calculate_precise_ai_score(
 
     trend_score = min(30.0, trend_score)
 
-    # ══════════════════════════════════════════════════════════
-    #  維度二：20日主力籌碼 — 權重 40 分 (40%)
-    #  過濾隔日沖與假買
-    # ══════════════════════════════════════════════════════════
-    chip_score = 0.0
-    c_inst = c_main = c_ldelta = c_margin = c_holder = 0.0
+    # Chip scores are disabled until real historical chip feeds are connected.
 
-    foreign_days = chip.get("foreign", 0)       # 外資連買/賣天數（正=買）
-    it_days = chip.get("it", 0)                 # 投信連買/賣天數
-    dealer_days = chip.get("dealer", 0)         # 自營商連買/賣天數
-    main_diff = chip.get("main_diff", 0)        # 主力買賣家數差
-    large_holder = chip.get("large_holder", 50) # 大戶持股比重 %
-    large_delta = chip.get("large_delta", 0)    # 大戶持股比重變化
-    margin_chg = chip.get("margin_chg", 0)      # 融資餘額變動 %
-
-    # (a) 法人淨買天數綜合 — 最高 18 分
-    #     【放寬】改以 10 日為滿買基準（原 20 日過苛，多頭股常低於 15 分）
-    c_inst = min(10.0, max(foreign_days, 0) / 10.0 * 10) + min(8.0, max(it_days, 0) / 10.0 * 8)
-    chip_score += c_inst
-
-    # (b) 主力買賣家數差 — 最高 8 分
-    #     【放寬】正差以 10 家為滿分基準（原 20 家）
-    if main_diff > 0:
-        c_main = min(8.0, (main_diff / 10.0) * 8)
-    else:
-        c_main = max(0.0, 3 + (main_diff / 20.0) * 3)
-    chip_score += c_main
-
-    # (c) 大戶持股集中度變化 — 最高 8 分
-    if large_delta > 0:
-        c_ldelta = min(8.0, large_delta * 2)
-    elif large_delta < -1:
-        c_ldelta = max(0.0, 3 + large_delta * 1.5)
-    else:
-        c_ldelta = 3.0
-    chip_score += c_ldelta
-
-    # (d) 融資融券過濾：融資暴增代表散戶追高（扣分）
-    if margin_chg > 8:
-        c_margin = -4.0
-    elif margin_chg > 3:
-        c_margin = -1.0
-    elif margin_chg < -5:
-        c_margin = 4.0
-    elif margin_chg < -2:
-        c_margin = 2.0
-    chip_score += c_margin
-
-    # (e) 大戶持股比重基準加分
-    if large_holder >= 60:
-        c_holder = 4.0
-    elif large_holder >= 50:
-        c_holder = 2.0
-    chip_score += c_holder
-
-    chip_score = float(np.clip(chip_score, 0, 40))
-
-    # ══════════════════════════════════════════════════════════
-    #  維度三：7日爆發動能 — 權重 30 分 (30%)
-    #  量能爆發(12) + 價格動量(9) + 突破信號(4) + RSI/MACD 動能確認(5)
-    #  【BUG 修正】原版完全未採計 RSI / MACD，導致「RSI>50 且 MACD>0」的
-    #  多方個股動能分數近乎掛零；並修正價格動量權重的對位錯置。
-    # ══════════════════════════════════════════════════════════
+    # Short-term momentum, calculated exclusively from actual OHLCV.
     momentum_score = 0.0
     m_vol = m_price = m_break = m_rsi_macd = 0.0
     weighted_vol_score = 0.0
@@ -419,31 +302,29 @@ def calculate_precise_ai_score(
     momentum_score = float(np.clip(momentum_score, 0, 30))
 
     # ══════════════════════════════════════════════════════════
-    #  總分 = 趨勢(30) + 籌碼(40) + 動能(30)
+    #  總分 = 趨勢(30) + 動能(30)；籌碼不計分
     # ══════════════════════════════════════════════════════════
-    total = int(round(float(trend_score + chip_score + momentum_score)))
-    total = int(np.clip(total, 0, 100))
+    total = int(round(float(trend_score + momentum_score)))
+    total = int(np.clip(total, 0, 60))
 
     # 【門檻調整】放寬黃燈區間：>=75 綠燈、60~74 黃燈、<60 紅燈
-    if total >= 75:
-        signal_type = "75分以上: 🟢大戶鎖碼波段股（強勢）"
-    elif total >= 60:
-        signal_type = "60-74分: 🟡籌碼沉澱中"
+    if total >= 45:
+        signal_type = "🟢技術趨勢偏強"
+    elif total >= 36:
+        signal_type = "🟡技術趨勢中性"
     else:
-        signal_type = "<60分: 🔴趨勢偏弱/觀望"
+        signal_type = "🔴技術趨勢偏弱"
 
     # ══════════════════════════════════════════════════════════
-    #  與前一日比較：總分變化與主力籌碼轉折
-    #  以 df 去掉最後一根 K + 籌碼連買賣天數回推一日，
-    #  重跑同一評分引擎取得「昨日總分」再相減。
+    # Compare technical scores using actual prior candles only.
     # ══════════════════════════════════════════════════════════
     score_delta = None
-    chip_turn = _chip_turn_label(chip)
-    if _compute_delta and len(df) >= 31:
+    chip_turn = None
+    if _compute_delta and len(df) >= 121:
         try:
             prev_result = calculate_precise_ai_score(
                 df.iloc[:-1],
-                _chip_prev_day(chip),
+                {},
                 fund,
                 ticker=ticker,
                 debug_log=False,
@@ -454,42 +335,19 @@ def calculate_precise_ai_score(
             score_delta = None
 
     # ── 雙情境行動指引：評分 + 短線訊號綜合判定 ──
-    advice_no_position, advice_has_position, note_text = decide_action_advice(df, chip, total)
+    advice_no_position, advice_has_position, note_text = decide_action_advice(df, {}, total, debug_log=debug_log)
     action_advice = advice_no_position  # 相容舊欄位：預設顯示未持股視角
 
     # ── Debug Log：輸出各子項目得分，便於確認是資料傳錯還是算法過苛 ──
     if debug_log:
-        _debug_print("=" * 64)
-        _debug_print(f"[AI Score] {ticker or '(未知標的)'}　收盤 {last:.2f}")
-        _debug_print(
-            f"[AI Score] 趨勢 {trend_score:.1f}/30 = 排列 {t_align:.0f} + MA20斜率 {t_slope:.1f}"
-            f" + MA60支撐 {t_support:.1f}（回測 {support_touches} 次）"
-        )
-        _debug_print(
-            f"[AI Score] 籌碼 {chip_score:.1f}/40 = 法人 {c_inst:.1f} + 主力差 {c_main:.1f}"
-            f" + 大戶變化 {c_ldelta:.1f} + 融資調整 {c_margin:+.1f} + 大戶比重 {c_holder:.0f}"
-        )
-        _debug_print(
-            f"[AI Score] 動能 {momentum_score:.1f}/30 = 量能加權 {m_vol:.1f} + 價格動量 {m_price:.1f}"
-            f" + 突破 {m_break:.0f} + RSI/MACD確認 {m_rsi_macd:.0f}"
-        )
-        _debug_print(
-            f"[AI Score] 輸入檢查：外資 {foreign_days}／投信 {it_days}／主力差 {main_diff}／"
-            f"大戶 {large_holder}%（{large_delta:+.1f}）／融資 {margin_chg:+.1f}%｜"
-            f"RSI={rsi_now:.1f}　MACD柱={hist_now:+.2f}　量能加權比={weighted_vol_score:.2f}"
-        )
-        _debug_print(f"[AI Advice] {note_text}")
-        if score_delta is not None:
-            delta_txt = f"較前日 {score_delta:+d} 分"
-        else:
-            delta_txt = "較前日 --（資料不足或計算失敗）"
-        if chip_turn:
-            delta_txt += f"｜{chip_turn}"
-        _debug_print(f"[AI Delta] {delta_txt}")
-        _debug_print(f"[AI Score] 總分 {total}/100 → {signal_type}｜未持股 {advice_no_position}｜持股 {advice_has_position}")
+        _debug_print(f"[Technical Score] {ticker} {total}/60; chip data excluded")
 
     return {
         "total_score": total,
+        "score_max": 60,
+        "model_version": "technical-real-v1",
+        "coverage": "僅技術面；籌碼及基本面未計分",
+
         "signal_type": signal_type,
         "action_advice": action_advice,
         "advice_no_position": advice_no_position,
@@ -497,7 +355,7 @@ def calculate_precise_ai_score(
         "note_text": note_text,
         "score_breakdown": {
             "trend_60d": round(float(trend_score), 2),
-            "chip_20d": round(float(chip_score), 2),
+            "chip_20d": None,
             "momentum_7d": round(float(momentum_score), 2),
         },
         "score_delta": score_delta,
@@ -547,8 +405,8 @@ def get_global_precise_diagnosis(
     roe = fund.get("roe")
     div_yield = fund.get("dividend_yield")
     eps_desc = f"EPS = {eps:.2f}" if eps is not None else "EPS 暫無資料"
-    pe_desc = f"P/E = {pe:.1f}倍（合理）" if pe is not None and 10 <= pe <= 25 else \
-              f"P/E = {pe:.1f}倍（偏高）" if pe is not None and pe > 25 else \
+    pe_desc = f"P/E = {pe:.1f}倍" if pe is not None and 10 <= pe <= 25 else \
+              f"P/E = {pe:.1f}倍" if pe is not None and pe > 25 else \
               f"P/E = {pe:.1f}倍" if pe is not None else "P/E 暫無資料"
     roe_desc = f"ROE = {roe * 100:.1f}%" if roe is not None else "ROE 暫無資料"
     # 【BUG 修正】yfinance 的 dividendYield 已是「百分點」數值（1.18 = 1.18%），
@@ -584,7 +442,7 @@ def get_global_precise_diagnosis(
     # ── 量能與籌碼文字 ──
     vol_ratio_20 = vol_now / vol_ma20 if vol_ma20 else 1.0
     if vol_ratio_20 >= 1.5:
-        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能爆發（大戶進場關照）"
+        vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能放大（無法據此判定大戶進場）"
     elif vol_ratio_20 >= 1.2:
         vol_text = f"成交量為 20 日均量 {vol_ratio_20:.2f} 倍，量能溫和放大"
     elif vol_ratio_20 <= 0.6:
@@ -594,7 +452,7 @@ def get_global_precise_diagnosis(
 
     market_cap = fund.get("market_cap")
     if market_cap is not None and market_cap >= 200_000_000_000:
-        cap_text = f"市值 {market_cap / 1e12:.1f} 兆，屬大型權值股（大戶保護力強）"
+        cap_text = f"市值 {market_cap / 1e12:.1f} 兆，屬大型市值股票"
     elif market_cap is not None:
         cap_text = f"市值 {market_cap / 1e9:.0f} 億"
     else:
@@ -607,6 +465,9 @@ def get_global_precise_diagnosis(
         "code": code,
         "name": name,
         "score": score,
+        "score_max": score_result["score_max"],
+        "model_version": score_result["model_version"],
+        "coverage": score_result["coverage"],
         "signal_type": signal_type,
         "action_advice": action_advice,
         "advice_no_position": advice_no_position,
@@ -623,13 +484,16 @@ def get_global_precise_diagnosis(
     }
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_ai_diagnosis(ticker: str, df: pd.DataFrame, chip: dict, fund: dict) -> dict:
-    """AI 診斷快取層（ttl = 3600 秒 = 1 小時）。
+    # DataFrame attrs may not be included in Streamlit's hash. Validate before
+    # reading the cache, and explicitly include provenance in its key.
+    validate_scoring_frame(df)
+    provenance = (df.attrs.get("price_source"), df.attrs.get("is_stale"), df.attrs.get("fetched_at"))
+    return _cached_verified_diagnosis(ticker, df, chip, fund, provenance)
 
-    同支股票在資料未變動的前提下，1 小時內重複檢視直接命中記憶體快取，
-    評分計算 0 秒完成；K 線 / 籌碼 / 基本面任一數據變動時自動重算。
-    """
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_verified_diagnosis(ticker, df, chip, fund, provenance):
     return get_global_precise_diagnosis(ticker, df, chip, fund)
 
 
@@ -639,13 +503,13 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
     signal_type = diag.get("signal_type", "")
     score_breakdown = diag.get("score_breakdown", {})
 
-    icon = '🟢' if '大戶鎖碼' in signal_type else ('🟡' if '籌碼沉澱' in signal_type else '🔴')
+    icon = '🟢' if score >= 45 else ('🟡' if score >= 36 else '🔴')
 
     # 【門檻調整】卡片配色同步放寬：>=75 綠、>=60 黃、其餘紅
-    if score >= 75:
+    if score >= 45:
         color = "#10B981"
         glow = "rgba(16,185,129,0.40)"
-    elif score >= 60:
+    elif score >= 36:
         color = "#F59E0B"
         glow = "rgba(245,158,11,0.35)"
     else:
@@ -654,7 +518,6 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
     status_color = color
 
     trend_60d = score_breakdown.get("trend_60d", 0)
-    chip_20d = score_breakdown.get("chip_20d", 0)
     momentum_7d = score_breakdown.get("momentum_7d", 0)
 
     # ── 與前一日比較：分數變化（+ 綠字 / - 紅字 / 0 或無資料 灰字）──
@@ -688,9 +551,9 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
     <span style="font-size:1.8rem;">{icon}</span>
     <div>
-      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">AI 多重週期滑動評分：{signal_type}</div>
-      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">綜合評分 {score} / 100　｜　{delta_html}{turn_html}</div>
-      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">60日趨勢({trend_60d:.0f}/30) + 20日籌碼({chip_20d:.0f}/40) + 7日動能({momentum_7d:.0f}/30)</div>
+      <div style="font-size:1.35rem;font-weight:900;color:{color};letter-spacing:1px;">真實行情技術評分：{signal_type}</div>
+      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">技術評分 {score} / 60（不是勝率）　｜　{delta_html}{turn_html}</div>
+      <div style="color:#9CA3AF;font-size:0.82rem;margin-top:2px;">60日趨勢({trend_60d:.0f}/30) + 7日動能({momentum_7d:.0f}/30)；籌碼與基本面未計分</div>
     </div>
   </div>
 
@@ -700,7 +563,7 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
       <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("ma_text", "均線數據解析中...")}</div>
     </div>
     <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #3B82F6;">
-      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">💪 20日主力籌碼 ({chip_20d:.0f}/40)</div>
+      <div style="font-size:0.78rem;color:#9CA3AF;margin-bottom:4px;">📦 真實成交量（不代表法人或主力）</div>
       <div style="font-size:0.85rem;font-weight:800;color:#E5E7EB;">{diag.get("vol_text", "成交量解析中...")}</div>
     </div>
     <div style="flex:1;min-width:220px;background:rgba(255,255,255,0.05);border-radius:10px;padding:12px 14px;border-top:3px solid #F59E0B;">
@@ -714,7 +577,7 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
   </div>
 
   <div style="color:#6B7280;font-size:0.75rem;margin-top:10px;text-align:right;">
-    多重週期滑動評分：60日趨勢(30) + 20日籌碼(40) + 7日動能(30)　|　僅供參考
+    技術評分：60日趨勢(30) + 7日動能(30)；尚未回測校準　|　僅供參考
   </div>
 </div>
 """,
@@ -752,7 +615,7 @@ def render_ultimate_diagnosis_card(diag: dict) -> None:
             ("📈 均線排列 (MA)", "#60A5FA", diag.get("ma_text", "均線數據解析中...")),
             ("💪 RSI 動能指標", "#A78BFA", diag.get("rsi_text", "RSI 指標解析中...")),
             ("📊 MACD 柱狀體", "#34D399", diag.get("macd_text", "MACD 動能解析中...")),
-            ("📦 成交量與籌碼", "#FBBF24", diag.get("vol_text", "成交量解析中...")),
+            ("📦 成交量", "#FBBF24", diag.get("vol_text", "成交量解析中...")),
         ]
         grid_html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
         for title, border_c, body in detail_items:
@@ -779,10 +642,10 @@ _DEBUG_WATCHLIST: list[tuple[str, str]] = [
 def debug_find_green_light_stocks() -> list[dict]:
     """【Debug】掃描熱門標的最新總分與燈號，輸出至終端機並回傳結果清單。
 
-    綠燈標準：total_score >= 75 分。
+    綠燈標準：技術分數 >= 45 / 60。
     單檔執行：python frontend/components/ai_diagnosis.py
     """
-    from backend.services.stock_fetcher import fetch_stock_data, generate_chip_data
+    from backend.services.stock_fetcher import fetch_stock_data, get_chip_data
     from backend.services.stock_master import get_fundamental
 
     results: list[dict] = []
@@ -794,13 +657,13 @@ def debug_find_green_light_stocks() -> list[dict]:
             if df is None or len(df) < 30:
                 _debug_print(f"[GreenLight] ⚠️ {name} ({ticker})　資料不足，略過")
                 continue
-            chip = generate_chip_data(ticker)
+            chip = get_chip_data(ticker)
             fund = get_fundamental(ticker)
             diag = get_global_precise_diagnosis(ticker, df, chip, fund, debug_log=False)
             results.append(diag)
-            mark = "🟢" if diag["score"] >= 75 else ("🟡" if diag["score"] >= 60 else "🔴")
+            mark = "🟢" if diag["score"] >= 45 else ("🟡" if diag["score"] >= 36 else "🔴")
             _debug_print(
-                f"[GreenLight] {mark} {name} ({diag['code']})　總分 {diag['score']}/100　"
+                f"[GreenLight] {mark} {name} ({diag['code']})　技術分數 {diag['score']}/60　"
                 f"{diag['signal_type']}｜未持股 {diag['advice_no_position']}｜持股 {diag['advice_has_position']}"
             )
         except Exception as exc:
@@ -811,7 +674,7 @@ def debug_find_green_light_stocks() -> list[dict]:
         summary = "、".join(f"{r['name']}({r['code']}) {r['score']}分" for r in greens)
         _debug_print(f"[GreenLight] 🟢 達到綠燈標準共 {len(greens)} 支：{summary}")
     else:
-        _debug_print("[GreenLight] 目前沒有達到綠燈標準（>=75 分）的熱門標的")
+        _debug_print("[GreenLight] 目前沒有達到綠燈標準（>=45 / 60 分）的熱門標的")
     return results
 
 
