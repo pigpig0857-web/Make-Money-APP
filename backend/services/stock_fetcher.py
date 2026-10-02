@@ -33,12 +33,12 @@ class StockDataUnavailableError(Exception):
 
 # ────────────────────── 日 K 數據下載 ──────────────────────
 
-def _download_daily(ticker: str, history_period: str = "1y"):
+def _download_daily(ticker: str, history_period: str = "1y", *, force_refresh=False):
     """讀取近期資料庫行情；過期才下載，失敗時保留已存行情。"""
     database_available = True
     try:
         stored = load_daily_prices(ticker, history_period)
-        if stored is not None:
+        if stored is not None and not force_refresh:
             frame, refreshed = stored
             return frame, f"PostgreSQL（Yahoo Finance；更新 {refreshed.astimezone(ZoneInfo('Asia/Taipei')):%Y-%m-%d %H:%M}）"
     except Exception:

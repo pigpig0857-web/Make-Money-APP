@@ -11,6 +11,7 @@ import streamlit as st
 from frontend.components.sidebar import render_sidebar
 from frontend.components.database_status import render_database_status
 from frontend.main_view import render_main_view
+from frontend.components.watchlist_panel import render_watchlist_panel
 
 # ====================== 頁面基本設定 ======================
 st.set_page_config(
@@ -32,7 +33,8 @@ if "stock_search_input" not in st.session_state:
 # ====================== 渲染 ======================
 render_sidebar()
 render_database_status()
-render_main_view()
+if not render_watchlist_panel():
+    render_main_view()
 
 from frontend.components.scroll_script import render_scroll_script
 render_scroll_script()

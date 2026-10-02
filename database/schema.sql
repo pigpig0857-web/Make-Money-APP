@@ -105,3 +105,8 @@ CREATE TABLE IF NOT EXISTS money_app.market_index_closes (
     retrieved_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (symbol, trade_date)
 );
+
+CREATE TABLE IF NOT EXISTS money_app.watchlist (
+    ticker TEXT PRIMARY KEY REFERENCES money_app.stocks(ticker),
+    added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
